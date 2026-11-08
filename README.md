@@ -1,43 +1,50 @@
-# Modbus_RS485_PC — PC ↔ RS485 透传桥
+# Modbus_RS485_PC — PC ↔ RS485 路由器（01 透传 / 02 本机 DHT11 从机）
 
-> PC 向单片机发送 Modbus 请求帧，单片机**不进行帧校验**，只把这一帧原样搬上 RS485 总线，
-> 替 PC 与温湿度变送器完成一次「请求—应答」交互（口头常说的"握手"），
-> 再把变送器的应答帧原样回传 PC。
-
-STM32F103C8T6 + HAL，裸机 `while(1)`，无 RTOS。当前版本 **v1.0.0**：全链路已跑通，单次事务往返实测约 62ms。
+> 单片机不再是无脑透传桥，而是一个**带身份判断的路由器**：收到 PC 的 Modbus 请求帧后，
+> 先验帧（长度 + CRC）、再看地址、最后决定这帧归谁处理。
+>
+> - 地址 `0x01` → 原样透传给 RS485 总线上的外部温湿度变送器，由它自己应答
+> - 地址 `0x02` → 本机 DHT11 虚拟从机，读缓存组帧后从 USART1 直接回 PC
+> - 其他地址 → 静默丢弃并计数
+>
+> STM32F103C8T6 + HAL，裸机 `while(1)`，无 RTOS。**当前版本 v1.0.0（main，纯透传桥）；
+> 本分支 `feat/modbus-router` 为 v2.0.0 候选**，新增路由与 02 从机，待上板实测后合并 main 并打 tag。
 
 ---
 
 ## 1. 这个版本做什么
 
-单片机在此**不是 Modbus 从机，也不解析协议**，它是一条双向通道：
+上一版（v1.0.0）是裸透传桥：**不校验、不解析**，地址错 / CRC 错 / 长度不完整的帧一律照搬。
+这一版把「先验帧、再路由」前移到了转发之前：
 
 ```
-PC 主站 (串口助手 / Modbus Poll)
+PC 主站 (Modbus Poll / 串口助手)
         │  USART1  115200 8N1   PA9(TX) / PA10(RX)
         ▼
-┌───────────────────────────────────────────┐
-│  STM32F103C8T6  透传桥                    │
-│  PC_RX[] ──原样──> sendMessage() ──> USART2│
-│  ModbusRx[] ──原样──> HAL_UART_Transmit ──>USART1
-└───────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│  STM32F103C8T6  路由器                                    │
+│                                                           │
+│  PC_RX[] ──> uartDataHandler_PC()                        │
+│     ├─ checkFrame()：长度 + CRC 判决                       │
+│     └─ switch(地址)                                       │
+│          ├─ 0x01 → sendMessage() → USART2 → RS485 变送器  │
+│          ├─ 0x02 → transmitDataMake() → makePacket_03()   │
+│          │         读 ModbusRegister[0..1] → USART1 回 PC │
+│          └─ 其他 → bad_Addrs++（丢弃）                     │
+│                                                           │
+│  DHT11(PA11) ── 主循环 2s 采样 ──> ModbusRegister[0..1]   │
+└───────────────────────────────────────────────────────────┘
         │  USART2  9600 8N1  PA2/PA3 + PA1(DE/RE)
         ▼
 RS485 温湿度变送器（从机地址 0x01）
 ```
 
-**一个容易混淆、但必须分清的区别：**
-
-| | 做不做 | 由谁做 |
+| | v1.0.0（main） | 本分支（v2.0.0 候选） |
 |---|---|---|
-| **判帧**（这一帧什么时候结束） | ✅ 做 | 5ms 静默间隔，两路各一套 |
-| **帧校验**（CRC / 从机地址 / 功能码） | ❌ 不做 | 交给 PC 端主站软件或变送器 |
-
-也就是说：地址错的帧、CRC 错的帧、长度不完整的帧，单片机**一律照搬不过滤**。
-这正是本工程要拿来验证「地址错 / CRC 错 / 采帧」三类用例的前提——脏帧能原样通过桥，才能在 PC 端观察真实行为。
-
-> 严格讲 Modbus RTU 没有"握手"（不建立连接），这里是一次 `请求 → 应答` 事务；
-> 本文档沿用口语说法，但代码实现的是原样转发，不做任何协商。
+| 判帧 | ✅ 5ms 静默 | ✅ 同左 |
+| CRC / 长度校验 | ❌ 不做 | ✅ `checkFrame()` 前置 |
+| 地址路由 | ❌ 无 | ✅ 01 透传 / 02 本地 / 其他丢弃 |
+| 本机从机（DHT11） | ❌ 无 | ✅ 02 只读温湿度 |
 
 ## 2. 硬件与参数
 
@@ -47,69 +54,82 @@ RS485 温湿度变送器（从机地址 0x01）
 | USART1（PC 侧） | 115200 / 8N1，PA9=TX、PA10=RX，中断收 + 阻塞发 |
 | USART2（RS485 侧） | 9600 / 8N1，PA2=TX、PA3=RX，中断收 + 阻塞发 |
 | RS485 方向脚 | **PA1**，`SET`=DE 有效(发送)、`RESET`=接收态；`gpio.c` 上电初始为接收态 |
+| DHT11 数据脚 | **PA11**，单总线，代码开内部上拉，建议再加 4.7k~10k 外部上拉 |
 | 判帧阈值 | `FRAME_GAP_MS = 5`（按 9600 侧 3.5T ≈ 3.65ms 定），SysTick 1ms 滴答 |
 | 缓冲区 | `BUFFERSIZE = 255`，两路各自独立 |
-| 从机 | 温湿度变送器，地址 0x01 |
+| 外部从机 | 温湿度变送器，地址 0x01 |
+| 本机从机 | DHT11，地址 0x02，保持寄存器 0/1 |
 
 ## 3. 代码结构
 
 | 文件 | 职责 |
 |---|---|
-| `Core/Src/main.c` | 初始化 + 置 PA1 为接收态 + 启动两路 `HAL_UART_Receive_IT`；`while(1)` 轮询两个消费者 |
-| `Core/APP/UART_Buf/UART_Buf.c/.h` | 两路接收缓冲 `PC_RX[]` / `ModbusRx[]`、字节计数器、`HAL_UART_RxCpltCallback` 分流、`HAL_UART_ErrorCallback` 两路错误恢复、`_write()` 把 printf 重定向到 USART1 |
-| `Core/APP/Modbus/modbus_rtu.c/.h` | 两路 1ms 判帧 `uartTimer()` / `uartTimer_PC()`、两个消费者 `uartDataHandler_PC()` / `uartDataHandler_Modbus()`、`sendMessage()`（含 PA1 方向切换）、`printf_HXL()` 旁路日志 |
+| `Core/Src/main.c` | 初始化 + 置 PA1 接收态 + 启动两路 `HAL_UART_Receive_IT` + `DHT11_Init`；`while(1)` 轮询两个消费者 + 周期采样 DHT11 |
+| `Core/APP/UART_Buf/UART_Buf.c/.h` | 两路接收缓冲 `PC_RX[]` / `ModbusRx[]`、字节计数器、`frameOverflow_PC` 溢出标志、`HAL_UART_RxCpltCallback` 分流、`HAL_UART_ErrorCallback` 双路恢复、`_write()` printf 重定向 |
+| `Core/APP/Modbus/modbus_rtu.c/.h` | 两路 1ms 判帧 `uartTimer()` / `uartTimer_PC()`、消费者 `uartDataHandler_PC()` / `uartDataHandler_Modbus()`、`checkFrame()` 判决、`sendMessage()`（按地址选出口）、`transmitDataMake()` + `makePacket_*` 功能码分发、`sendException()` 异常响应、四类丢弃计数 |
+| `Core/APP/CRC/CRC16.c/.h` | Modbus CRC16 —— `checkFrame()` 与 `makePacket_*` 都调用，多项式 0xA001 反射、初值 0xFFFF |
+| `Core/APP/DHT11/dht11.c/.h` | DHT11 单总线驱动（非阻塞调度 + 关中断读取），见 `DHT11/DHT11_介绍.md` |
 | `Core/Src/stm32f1xx_it.c` | `SysTick_Handler` 挂两个判帧函数；`USART1/2_IRQHandler` → `HAL_UART_IRQHandler` |
-| `Core/APP/CRC/CRC16.c/.h` | Modbus CRC16 —— **本版本主链路不调用**，供从机遗留代码使用 |
 | `.eide/eide.yml` / `Modbus_RS485_PC.ioc` | EIDE 编译配置 / CubeMX 引脚与 NVIC 配置 |
 
 ## 4. 关键实现点
 
-- **两路完全隔离**：各有独立缓冲区、独立计数器（`DataCounter_PC` / `DataCounter_Modbus`）、独立判帧状态（`*_PC` 后缀）。共用一套计数器会让 PC 帧和变送器帧互相破坏判帧。
-- **完成标志由消费者清**：`uartPacketComplatedFlag*` 在 `uartDataHandler_*()` 一进来就 RESET，同时清零计数器。若放在接收中断里清，或在消费者里不清，会导致同一帧被主循环重复转发刷屏，或下一帧首字节把未消费的标志抹掉。
-- **先拷出再清空**：`memcpy` 到 `pcFrame` / `rsFrame` 后再 `memset` 接收区，避免发送期间被中断改写、以及短帧尾部残留旧数据。
-- **方向脚只属于 RS485 那一路**：去往变送器走 `sendMessage()`（会切 PA1）；回传 PC 走 `HAL_UART_Transmit(&huart1, ...)`，**不碰 PA1**。
-- **回传发原始二进制帧**：`HAL_UART_Transmit(&huart1, (uint8_t*)rsFrame, len, 100)`。PC 串口助手需切「HEX 显示」；若用 Modbus Poll 等主站软件，也必须收原始帧才解析得了。`printf_HXL()` 只作为旁路调试保留（它输出的是 ASCII 文本，7 字节会膨胀成 32 字节）。
-- **方向切换等 TC 再切**：`HAL_UART_Transmit()` 在返回前已等到 `UART_FLAG_TC`（最后一个字节完全移出），因此 `sendMessage()` 返回后立刻拉低 PA1 是安全的，不会截断数据、也不会与总线冲突。若日后改用 DMA 或异步发送，则必须显式轮询 TC 后才能切方向。
-- **两路错误恢复**：`HAL_UART_ErrorCallback()` 对 USART1 / USART2 分别处理，各自清 ORE、清自己的计数器与判帧状态、重启 `HAL_UART_Receive_IT`。任何一路漏掉，一次 ORE 或线路噪声就会让该路永久收不到数据，只能复位。
-- **发送超时随帧长动态计算**：两处 `HAL_UART_Transmit()` 的超时统一为 `(uint32_t)len * 2 + 10`（9600 下每字节 1.04ms，留一倍余量再加兑底）。原写死 100ms，在 9600 上只够 96 字节，Modbus 最大帧 256 字节会被 HAL 判超时截断。
+- **先验帧再路由**：`checkFrame()` 只做「长度 ≥ 4 + CRC」，返回 `FRAME_OK / Too_SHORT / Too_LONG / CRC_ERR`。坏帧在路由前就被拦下，不再占用 RS485 总线和变送器的处理时间。
+- **超长与「正好 255 字节合法帧」的区分**：两者 `DataCounter_PC` 都停在 255，主循环看不到区别。由接收中断在缓冲区写满时置 `frameOverflow_PC`，主循环 `uartDataHandler_PC()` 取走并清零，折成 `FRAME_Too_LONG`。`BUFFERSIZE=255` 恰好等于 Modbus 单帧合法上限（0x10 写满 123 寄存器：1+1+2+2+1+246+2=255），**不可升到 256**，否则 `uint8_t len` 回绕成 0。
+- **地址决定出口**：`sendMessage()` 看帧头第一个字节——`0x01` 走 USART2 + DE 拉高（RS485），其余地址写 USART1（本机应答回 PC）。因为 Modbus 帧头就是从机地址，这个判断天然成立，`makePacket_*` 和 `sendException` 一行都不用改，全部自动获得按地址选出口的能力。
+- **02 只读**：`case 0x02` 只放行 `0x03` 读保持寄存器，其余功能码回异常 `0x01`。因为写进去的值会被下一次 2s 采样直接覆盖，开放写会让 PC 误以为写入成功。
+- **采样与打印解耦**：`DHT11_Handler()` 在 `#if DHT11_LOG_ENABLE` 之外无条件跑，打印降级为可选分支。采样成功写 `ModbusRegister[0]=温度×10`、`[1]=湿度×10`（int16 补码 / uint16），冷启动成功前保持 0。
+- **采样避开总线忙**：`DHT11_ReadFrame()` 内部关中断约 4ms，主循环只在 `RxInterruptFlag_PC` 与 `RxInterruptFlag` 都静默时才驱动传感器，把这段 4ms 挪到总线空闲缝隙，避免顶掉 PC 帧。
+- **两路错误恢复**：`HAL_UART_ErrorCallback()` 对 USART1 / USART2 分别清 ORE、清各自计数器与判帧状态、清 `frameOverflow_PC`、重启接收。USART1 分支补清 `frameOverflow_PC` 是修「溢出标志跨帧残留」的关键。
+- **发送超时随帧长动态计算**：`HAL_UART_Transmit()` 超时统一为 `(uint32_t)len * 2 + 10`，9600 下每字节 1.04ms，留一倍余量。
+- **两路完全隔离**：各有独立缓冲区、计数器、判帧状态（`*_PC` 后缀）。完成标志由消费者一进来就清，先 `memcpy` 拷出再 `memset` 接收区。
 
-## 5. 实测验证（v1.0）
+## 5. 实测验证
+
+### 5.1 地址 01 透传（v1.0 已验证）
 
 ```
-PC  →  01 03 00 01 00 01 D5 CA     请求帧：地址01 / 03读保持寄存器 / 起始0x0001 / 读1个 / CRC D5 CA
-PC  ←  01 03 02 01 14 B9 DB       应答帧：地址01 / 03 / 字节数02 / 数据0x0114(276) / CRC B9 DB
+PC  →  01 03 00 01 00 01 D5 CA     请求：读变送器保持寄存器 1 个
+PC  ←  01 03 02 01 14 B9 DB       应答：字节数 02 / 数据 0x0114(276)
 ```
 
-`0x0114 = 276`，若变送器按 ×0.1 标定即 27.6（℃/% 及倍率需查变送器手册确认）。
-收到该帧即证明：`PC → USART1 → RS485(PA1) → 变送器 → USART2 → USART1 → PC` 全链路通。
+### 5.2 地址 02 本机 DHT11（待上板实测）
 
-### 连续收发速率边界（2026-11-08 实测）
+| 请求帧 | 应答帧 | 含义 |
+|---|---|---|
+| `02 03 00 00 00 02 C4 38` | `02 03 04 01 13 02 4E B8 5E` | 温度 0x0113=275 → 27.5℃；湿度 0x024E=590 → 59.0%RH |
+| `02 03 00 09 00 04 <CRC>` | `02 83 02 30 F1` | 起始 9 + 4 > 10，越界 → 异常 0x02 |
+| `02 06 00 00 00 64 <CRC>` | `02 86 01 <CRC>` | 02 只读，写请求 → 异常 0x01 |
 
-请求固定为 `01 03 00 00 00 02 C4 0B`（读 2 个寄存器，应答应为 9 字节）：
+> 寄存器布局：`0`=温度×10 的 int16 补码，`1`=湿度×10 的 uint16。温湿度变送器行业通用布局，
+> 换 DHT22 / SHT30 也不用改 PC 端。零下温度注意 PC 端要用**有符号**显示，否则 −52 会显示成 65484。
+
+### 5.3 连续收发速率边界（2026-11-08 实测）
+
+请求固定 `01 03 00 00 00 02 C4 0B`（读 2 寄存器，应答应为 9 字节）：
 
 | PC 发送间隔 | 现象 |
 |---|---|
-| 16ms（≈62 帧/秒） | 应答被腰斩，只收到前缀 `01 03 04` / `01 03 04 02` / `01 03 04 02 74`（3~5 字节），始终收不全 |
+| 16ms（≈62 帧/秒） | 应答被腰斩，只收到前缀 3~5 字节，始终收不全 |
 | 100ms | 稳定「发一帧、收一帧」，应答 9 字节完整 |
 
-**成因**：一次事务往返约 62ms（变送器处理 ≈50ms + 9600 下 9 字节应答 9.4ms）。PC 以 16ms 节奏灌入时，桥收到新帧立即 `rs485Mode(1)` 转发，收发器在发送期间关闭接收，变送器尚未发完的应答字节被物理丢弃，因此碎片永远是应答帧前缀而非乱码。
-
-**注意**：62ms 随应答帧长增长（9600 下每多 1 个寄存器 +2.1ms）。读 10 个寄存器往返约 76ms，读 20 个约 97ms —— 100ms 间隔只对短应答安全，不能当固定门槛用。
+**成因**：一次事务往返约 62ms（变送器处理 ≈50ms + 9600 下 9 字节应答 9.4ms）。PC 以 16ms 节奏灌入时，
+桥收到新帧立即 `rs485Mode(1)` 转发，收发器在发送期间关闭接收，变送器尚未发完的应答字节被物理丢弃。
 
 ## 6. 已知限制与待办
 
 | 项 | 说明 |
 |---|---|
-| 从机遗留代码 | `uartDataHandler()` + `transmitDataMake()` + `makePacket_01/03/05/06/0F/10` + `sendException()` 主链路**均不调用**，是死代码，占 Flash，桥稳定后可删或另存分支 |
-| 判帧阈值 | 5ms 按 9600 侧定；115200 侧 3.5T ≈ 0.3ms。PC 串口助手若把一帧拆成多次发且间隔 >5ms，会被切成多帧 —— 这正是「采帧」待测现象，不是 bug |
-| 背靠背请求 | PC 发送间隔小于一次事务往返时间时，新请求会在上一帧应答尚未发完时抢占总线，`rs485Mode(1)` 使接收关闭，应答只回来前 3~5 字节。这是透传桥不做总线仲裁的固有边界，非转发 bug；根治需加「请求—应答状态机」（见下条待办） |
-| 无请求—应答状态机 | 当前 PC 帧到达即无条件转发，不判断总线是否正忙、不排队、不限速。`IDLE → SENDING → WAIT_RESP → IDLE` 状态机（含 300ms 应答超时）是让桥在高速请求下不丢字节的唯一正解 |
+| **02 端到端实测未做** | 需上板用 Modbus Poll（从站 2 / 功能码 03 / 起始 0 / 数量 2）验证；01 透传因 `sendMessage` 改动需**回归复测** |
+| 无请求—应答状态机 | 当前 PC 帧到达即转发，不判断总线是否忙、不排队、不限速。`IDLE → SENDING → WAIT_RESP → IDLE` 状态机是高速请求下不丢字节的唯一正解，本分支不处理 |
+| 从机遗留功能码 | `makePacket_01/05/06/15/16` 当前**不调用**（02 只开放 0x03，01 透传不解析），属遗留代码；`transmitDataMake()` + `makePacket_03()` 已被 02 路径使用 |
+| 拆包不重组 | Modbus RTU 无长度字段，帧边界靠静默间隔判定。PC 端若把一帧拆成间隔 >5ms 的多段发，会碎成多帧被判 `bad_SHORT`/`bad_CRC`。根治需按功能码「长度字段提前判帧」，本分支不做 |
+| 255 字节边界未实测 | 超长帧 → `bad_LONG` 的路径逻辑已通，但恰好 255 字节的合法长帧未上板验证 |
 | 注释陈旧 | `modbus_rtu.c` 文件头仍写「PB2 控制方向」，实际为 PA1，待改 |
-| 压力测试未完成 | 连续收发速率边界已测（见第 5 节）；地址错 / CRC 错 / 分包采帧三类用例仍未系统验证 |
 
 ## 7. 构建
 
-- **EIDE**（本项目实际使用）：打开 `Modbus_RS485_PC.code-workspace`，`.eide/eide.yml` 已配好三条头文件路径（`Core/APP/Modbus`、`Core/APP/UART_Buf`、`Core/APP/CRC`），arm-none-eabi-gcc 编译，产物在 `build/`（已忽略）。
+- **EIDE**（本项目实际使用）：打开 `Modbus_RS485_PC.code-workspace`，`.eide/eide.yml` 已配好头文件路径（`Core/APP/Modbus`、`Core/APP/UART_Buf`、`Core/APP/CRC`、`Core/APP/DHT11`），arm-none-eabi-gcc 编译，产物在 `build/`（已忽略）。
 - **STM32CubeIDE**：可直接导入 `.project` / `.cproject`。修改引脚后重新生成代码时，注意 `stm32f1xx_it.c` 的 `USER CODE` 区与 NVIC 勾选不要被覆盖。
 - 仓库已忽略 `/build`、`/bin`、`/obj`、`/out`、`/.settings` 等产物。
 
@@ -120,17 +140,23 @@ PC  ←  01 03 02 01 14 B9 DB       应答帧：地址01 / 03 / 字节数02 / �
 > **规范：每次更新推送，都必须说明三段 —— 改了什么 / 加了什么 / 解决了什么。**
 > `git commit` 的 message、推送时的说明、以及此处的每一条记录，都按这个结构写。
 
-### v1.0 · 2026-11-07 · `95ceb87` · 快照：PC-Modbus 透传桥 v1 全链路跑通
+### v2.0.0 候选 · 2026-11-08 · `feat/modbus-router`（本分支，未合并 main / 未打 tag）
 
-- **改了什么**：工程角色从「Modbus 从机」切换为「双向透传桥」；串口接收回调独立到 `UART_Buf.c`，两路拆成独立缓冲与独立判帧状态；RS485 方向脚由 Damo 工程的 PB2 改为 PA1；回传 PC 由 `printf_HXL()` 的 ASCII 文本改为 `HAL_UART_Transmit(&huart1, ...)` 原始二进制帧。
-- **加了什么**：USART1 接收链路（中断接收、5ms 判帧、PC 帧消费者）；`uartDataHandler_PC()` / `uartDataHandler_Modbus()` 两个消费者；`_write()` printf 重定向；`.ioc` 中 USART1/2 全局中断与 `stm32f1xx_it.c` 两个 IRQHandler；本地 git 仓库与 GitHub 私有仓库首次快照。
-- **解决了什么**：PC 请求帧原先根本进不了单片机（USART1 只发不收）、进了也没有转发通路的问题；判帧完成标志未消费导致主循环重复转发、计数器不清零导致后续帧追加错乱的问题；回传 ASCII 文本使主站软件无法解析、且字节数膨胀 4.6 倍的问题。最终实测拿到变送器应答 `01 03 02 01 14 B9 DB`，端到端链路打通。
+- **改了什么**：`sendMessage()` 由「固定走 USART2 + 拉高 DE」改为按帧头地址选出口（0x01 走 RS485，其余写 USART1）；`uartDataHandler_PC()` 由裸转发重构为「溢出检查 → 长度/CRC 判决 → 地址 switch」；`main.c` 把 DHT11 采样抽到 `#if DHT11_LOG_ENABLE` 之外；`MODBUS_CRC16` 形参改 `const char *`；`BUFFERSIZE` 注释订正为「255 = 0x10 写满 123 寄存器的 ADU 上限」。
+- **加了什么**：`FrameCheckResult` 枚举与 `checkFrame()`；四类丢弃计数器 `bad_SHORT` / `bad_LONG` / `bad_CRC` / `bad_Addrs`；地址路由 `switch(pcFrame[0])`（01 透传 / 02 只读 0x03 / 其他丢弃）；USART1 接收中断溢出标志 `frameOverflow_PC` 及错误回调补清；`transmitDataMake()` 入口最小帧长校验（<8 字节回异常）；DHT11 单总线驱动（`Core/APP/DHT11/`，PA11，非阻塞调度 + 关中断读取，上板验证 27.5℃/59.0%RH）；采样结果写入 `ModbusRegister[0..1]`。
+- **解决了什么**：坏帧（CRC 错 / 帧长 <4 / 地址非法）不再占用 RS485 总线；超长帧与「正好 255 字节合法帧」无法区分的问题（由中断置标志、主循环消费）；`frameOverflow_PC` 跨帧残留导致合法帧被误判 `FRAME_Too_LONG`；02 地址无入口、只能落进 `bad_Addrs`；DHT11 采样与调试打印耦合导致寄存器永远为 0；02 可被 0x06 写入的漏洞；`makePacket_03` 读 `msg[2..5]` 在短帧下读残留字节的越界隐患；DHT11 读取时关中断顶掉 PC 帧（改为总线静默才采样）。
 
 ### v1.0.0 · 2026-11-08 · 补齐 USART1 错误恢复 + 实测速率边界
 
-- **改了什么**：`HAL_UART_ErrorCallback()` 由「只处理 USART2、其余直接 return」改为 USART1 / USART2 两路分别恢复，各自清 ORE、清对应计数器与判帧状态、重启 `HAL_UART_Receive_IT`；`sendMessage()` 与 USART1 回传的 `HAL_UART_Transmit()` 超时由写死的 100ms 改为 `(uint32_t)len * 2 + 10`；版本号统一为 `v1.0.0` 语义化三段式；README 第 6 节删除三条已完成项。
-- **加了什么**：USART1 的 ORE 恢复通路；随帧长动态计算的发送超时；第 4 节补「方向切换等 TC 再切」「两路错误恢复」「发送超时随帧长计算」三条实现依据；第 5 节连续收发速率边界实测表（16ms 腰斩 / 100ms 完整）；第 6 节新增「背靠背请求」「无请求—应答状态机」两条限制。
-- **解决了什么**：USART1 一次 ORE 或线路噪声后永久收不到数据、只能复位的问题；9600 下超过 96 字节的帧（如 `0x10` 写 50 个寄存器 = 107 字节）被 HAL 判超时截断的问题；README 声称「方向切换应显式等 TC」而实际 `HAL_UART_Transmit` 内部已等待 TC、文档与代码脱节的问题；PC 高频连发时应答被腰斩却无文档解释、容易被误判为转发逻辑 bug 的问题。
+- **改了什么**：`HAL_UART_ErrorCallback()` 由「只处理 USART2、其余直接 return」改为 USART1 / USART2 两路分别恢复，各自清 ORE、清对应计数器与判帧状态、重启 `HAL_UART_Receive_IT`；`sendMessage()` 与 USART1 回传的 `HAL_UART_Transmit()` 超时由写死的 100ms 改为 `(uint32_t)len * 2 + 10`；版本号统一为 `v1.0.0` 语义化三段式。
+- **加了什么**：USART1 的 ORE 恢复通路；随帧长动态计算的发送超时；连续收发速率边界实测表（16ms 腰斩 / 100ms 完整）；「背靠背请求」「无请求—应答状态机」两条限制。
+- **解决了什么**：USART1 一次 ORE 或线路噪声后永久收不到数据、只能复位的问题；9600 下超过 96 字节的帧被 HAL 判超时截断的问题；PC 高频连发时应答被腰斩却无文档解释的问题。
+
+### v1.0 · 2026-11-07 · `95ceb87` · 快照：PC-Modbus 透传桥 v1 全链路跑通
+
+- **改了什么**：工程角色从「Modbus 从机」切换为「双向透传桥」；串口接收回调独立到 `UART_Buf.c`，两路拆成独立缓冲与独立判帧状态；RS485 方向脚由 Damo 工程的 PB2 改为 PA1；回传 PC 由 ASCII 文本改为原始二进制帧。
+- **加了什么**：USART1 接收链路（中断接收、5ms 判帧、PC 帧消费者）；两个消费者；`_write()` printf 重定向；`.ioc` 全局中断；本地 git 仓库与 GitHub 私有仓库首次快照。
+- **解决了什么**：PC 请求帧进不了单片机、没有转发通路的问题；判帧完成标志未消费导致重复转发的问题；回传 ASCII 使主站无法解析且字节数膨胀 4.6 倍的问题。最终实测拿到变送器应答 `01 03 02 01 14 B9 DB`。
 
 ### v1.0 文档补充 · 2026-11-07
 
