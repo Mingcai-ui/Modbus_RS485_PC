@@ -1,6 +1,6 @@
 #include "CRC16.h"
 
-uint16_t MODBUS_CRC16(char *buf, uint8_t len)
+uint16_t MODBUS_CRC16(const char *buf, uint8_t len)
 {
     uint16_t crc = 0xFFFF;
     uint8_t  i;

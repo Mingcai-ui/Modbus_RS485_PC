@@ -34,6 +34,11 @@ char ModbusTx[BUFFERSIZE];       /* 应答组包区 */
 static char pcFrame[BUFFERSIZE];   /* 拷出来再发，避免发送期间被中断改写 */
 static char rsFrame[BUFFERSIZE];
 
+uint32_t bad_SHORT = 0;     //帧太短次数记录变量
+uint32_t bad_LONG = 0;      //帧太长次数记录变量
+uint32_t bad_CRC = 0;       //CRC错误次数记录变量
+uint32_t bad_Addrs = 0;     //地址不匹配次数记录变量
+
 uint16_t rxCRC;
 
 // extern UART_HandleTypeDef huart2;
@@ -162,6 +167,17 @@ void sendMessage(char *msg, uint8_t len)
     rs485Mode(0);
 }
 
+//判断帧是否合法,进行长度检验和CRC检验
+static FrameCheckResult checkFrame(const char *msg, uint8_t len)    //const防止修改
+{
+    if (len < 4)    return FRAME_Too_SHORT;/* 最短合法帧 = 从机地址 + 功能码 + CRC(2) = 4 字节 */
+
+    /* 上界不在这里判：len 是 uint8_t，而中断已在 BUFFERSIZE 处封顶，
+       所以本函数的入参永远 <= 255，"超长"这件事它根本看不到。见调用处。 */
+    return (MODBUS_CRC16(msg, len)?FRAME_CRC_ERR:FRAME_OK);
+}
+
+// PC 侧数据处理
 void uartDataHandler_PC(void)
 {
     if(uartPacketComplatedFlag_PC != SET) return;
@@ -169,13 +185,39 @@ void uartDataHandler_PC(void)
     uartPacketComplatedFlag_PC=RESET;       //完整帧标志位清零
     uint8_t len = DataCounter_PC;
     DataCounter_PC=0;             //长度指针清零
+
+    /* 超长标志先取走再清零：无论本帧后面怎么走，都不能残留到下一帧 */
+    uint8_t overflowed = frameOverflow_PC;
+    frameOverflow_PC = RESET;
+
     if(len == 0) return;
 
-    memcpy(pcFrame,PC_RX,len);
+    memcpy(pcFrame,PC_RX,len);    //拷贝PC发送的数据
     memset(PC_RX,0,BUFFERSIZE);   //UART1缓冲区清空
-    sendMessage(&pcFrame[0],len);
-    
-}
+
+    /* 把"超长"折进同一个判决变量，下面只需要一处分支。
+       超长的证据只存在于中断里，所以由标记转成枚举值。 */
+    FrameCheckResult verdict = overflowed ? FRAME_Too_LONG : checkFrame(pcFrame, len);
+
+    if(verdict != FRAME_OK) //判断帧是否合法
+    {
+        if      (verdict == FRAME_Too_SHORT) { bad_SHORT++; }
+        else if (verdict == FRAME_Too_LONG)  { bad_LONG++;  }
+        else if (verdict == FRAME_CRC_ERR)   { bad_CRC++;   }
+        return;
+    }
+
+    switch((uint8_t)pcFrame[0])
+    {
+        //0x01地址是RS485从机,可自行处理Modbus格式帧
+        case 0x01: sendMessage(&pcFrame[0],len);    break;   //将合法的帧发送给Modbus
+
+        default : bad_Addrs++; break;                        //非 01 地址：静默丢弃
+    }
+}    
+
+
+// Modbus 侧数据处理
 void uartDataHandler_Modbus(void)
 {
     if(uartPacketComplatedFlag != SET) return;
@@ -190,6 +232,8 @@ void uartDataHandler_Modbus(void)
     HAL_UART_Transmit(&huart1, (uint8_t *)rsFrame, len, (uint32_t)len*2+10);   //将接收到的数据回显
     // printf_HXL(&rsFrame[0],len); //二进制格式回显
 }
+
+
 /* 异常响应：从机地址 + (功能码|0x80) + 异常码 + CRC */
 void sendException(char *msg, uint8_t code)
 {

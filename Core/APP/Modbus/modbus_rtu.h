@@ -38,6 +38,21 @@ enum
     WriteMultipleRegisters = 0x10,
 };
 
+typedef enum{
+    FRAME_OK = 0,
+    FRAME_Too_SHORT,    // 帧太短
+    FRAME_Too_LONG,     // 帧太长（由中断的 overflow 标记折算而来）
+    FRAME_CRC_ERR,      //CRC错误
+}FrameCheckResult;
+
+/* 丢弃计数：四类原因含义不同，分开记才有诊断价值。
+ * 只在主循环上下文读写、不进中断、不跨线程，所以不需要 volatile。
+ * 不加 static，是为了以后 OLED / 调试页能直接读这几个数。 */
+extern uint32_t bad_SHORT;    /* 帧长 < 4：判帧阈值或链路问题 */
+extern uint32_t bad_LONG;     /* 超出 BUFFERSIZE，尾部字节已被丢弃 */
+extern uint32_t bad_CRC;      /* CRC 错：帧内容坏了 */
+extern uint32_t bad_Addrs;    /* 地址不是 0x01：PC 端配置写错 */
+
 /* ================== 接收状态 (中断与主循环共享，必须 volatile) ================== */
 extern volatile uint8_t RxInterruptFlag;            //UART2数据接收状态标志位
 extern volatile uint8_t uartTimeCounter;            //UART2数据间隔计数器
@@ -46,6 +61,8 @@ extern volatile uint8_t uartPacketComplatedFlag;    //UART2收到完整帧数据
 extern volatile uint8_t RxInterruptFlag_PC;         //UART1数据接收状态标志位
 extern volatile uint8_t uartTimeCounter_PC;         //UART1数据间隔计数器
 extern volatile uint8_t uartPacketComplatedFlag_PC; //UART1收到完整帧数据标志位 
+
+
 /* ================== 接收与处理 ================== */
 void uartDataHandler(void);                          /* main 的 while(1) 里轮询调用 */
 
