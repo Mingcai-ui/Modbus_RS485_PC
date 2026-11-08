@@ -158,7 +158,7 @@ void uartTimer_PC(void)
 void sendMessage(char *msg, uint8_t len)
 {
     rs485Mode(1);
-    HAL_UART_Transmit(&huart2, (uint8_t *)msg, len, 100);
+    HAL_UART_Transmit(&huart2, (uint8_t *)msg, len, (uint32_t)len*2+10);
     rs485Mode(0);
 }
 
@@ -187,7 +187,7 @@ void uartDataHandler_Modbus(void)
     if(len == 0) return;
     memcpy(rsFrame,ModbusRx,len);
     memset(ModbusRx,0,BUFFERSIZE);  //UART2缓冲区清空
-    HAL_UART_Transmit(&huart1, (uint8_t *)rsFrame, len, 100);   //将接收到的数据回显
+    HAL_UART_Transmit(&huart1, (uint8_t *)rsFrame, len, (uint32_t)len*2+10);   //将接收到的数据回显
     // printf_HXL(&rsFrame[0],len); //二进制格式回显
 }
 /* 异常响应：从机地址 + (功能码|0x80) + 异常码 + CRC */

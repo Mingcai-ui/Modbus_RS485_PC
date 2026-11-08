@@ -44,18 +44,27 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 /* 串口错误回调：不清错误标志并重启接收，一次噪声就会永久收不到数据 */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
-    if (huart->Instance != USART2)
+    if (huart->Instance == USART1)
     {
-        return;
+        __HAL_UART_CLEAR_OREFLAG(huart);
+        
+        DataCounter_PC    = 0;
+        RxInterruptFlag_PC = RESET;
+        uartTimeCounter_PC = 0;
+
+        HAL_UART_Receive_IT(&huart1, (uint8_t *)&uart1_RxData, 1);
+    }
+    if (huart->Instance == USART2)
+    {
+        __HAL_UART_CLEAR_OREFLAG(huart);
+        
+        DataCounter_Modbus    = 0;
+        RxInterruptFlag = RESET;
+        uartTimeCounter = 0;
+
+        HAL_UART_Receive_IT(&huart2, (uint8_t *)&uart2_RxData, 1);
     }
 
-    __HAL_UART_CLEAR_OREFLAG(huart);
-    
-    DataCounter_Modbus    = 0;
-    RxInterruptFlag = RESET;
-    uartTimeCounter = 0;
-
-    HAL_UART_Receive_IT(&huart2, (uint8_t *)&uart2_RxData, 1);
 }
 
 /* printf 重定向到 USART1（单字符，阻塞发送） */
