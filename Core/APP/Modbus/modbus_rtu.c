@@ -60,6 +60,18 @@ static void rs485Mode(uint8_t tx)
  * ======================================================== */
 void transmitDataMake(char *msg, uint8_t Lenght)
 {
+    /* 最小帧长：Modbus 所有标准请求都是 8 字节起
+     * （地址 + 功能码 + 2 字节起始地址 + 2 字节数量/数据 + 2 字节 CRC）。
+     * 各 makePacket_* 内部要读 msg[2]~msg[5]，长度不够会读到上一条帧的残留
+     * 字节，组出一个地址/数量全是垃圾的应答。这里统一挡掉，
+     * 顺带覆盖 PC 侧 0x02 和 Modbus 侧本机从机两条入口。
+     * 此时 msg[0]/msg[1] 必然有效（checkFrame 已保证至少 4 字节）。 */
+    if (Lenght < 8)
+    {
+        sendException(msg, EX_ILLEGAL_VALUE);
+        return;
+    }
+
     switch (msg[1])
     {
     case ReadCoil:               makePacket_01(msg, Lenght); break;
@@ -156,15 +168,31 @@ void uartTimer_PC(void)
 }
 
 /* ========================================================
- * 5. 发送 (RS485 方向切换 + 阻塞发送)
- * HAL_UART_Transmit 返回时 TC 标志已置位，最后一个字节已移出，
+ * 5. 发送：按从机地址决定出口
+ *
+ * 帧头第一个字节就是从机地址，它同时决定了这帧该往哪条链路走：
+ *   0x01 → RS485 总线上的外部变送器，写 USART2 并拉高 DE
+ *   其他 → 本机自己产生的应答（如 0x02 的 DHT11），直接写 USART1 回 PC
+ *
+ * 放在这里统一判断，所有 makePacket_* 和 sendException 都不用关心出口，
+ * 调用方式和以前完全一样。
+ *
+ * RS485 侧：HAL_UART_Transmit 返回时 TC 标志已置位，最后一个字节已移出，
  * 此时拉低 DE 不会截断数据，也不会与总线冲突。
  * ======================================================== */
 void sendMessage(char *msg, uint8_t len)
 {
-    rs485Mode(1);
-    HAL_UART_Transmit(&huart2, (uint8_t *)msg, len, (uint32_t)len*2+10);
-    rs485Mode(0);
+    if ((uint8_t)msg[0] == SLAVEID)
+    {
+        rs485Mode(1);
+        HAL_UART_Transmit(&huart2, (uint8_t *)msg, len, (uint32_t)len*2+10);
+        rs485Mode(0);
+    }
+    else
+    {
+        /* 本机应答：USART1 全双工，不需要方向切换 */
+        HAL_UART_Transmit(&huart1, (uint8_t *)msg, len, (uint32_t)len*2+10);
+    }
 }
 
 //判断帧是否合法,进行长度检验和CRC检验
@@ -209,10 +237,32 @@ void uartDataHandler_PC(void)
 
     switch((uint8_t)pcFrame[0])
     {
-        //0x01地址是RS485从机,可自行处理Modbus格式帧
-        case 0x01: sendMessage(&pcFrame[0],len);    break;   //将合法的帧发送给Modbus
+        /* 0x01：RS485 总线上的外部温湿度变送器。原样透传，由它自己应答；
+           它的应答经 USART2 回来后由 uartDataHandler_Modbus 回显给 PC。 */
+        case 0x01: sendMessage(&pcFrame[0],len);    break;
 
-        default : bad_Addrs++; break;                        //非 01 地址：静默丢弃
+        /* 0x02：本机 DHT11 虚拟从机。数据源是 ModbusRegister[0..1]
+           （main 主循环周期采样填充），只开放读。
+           写操作在这里没有意义：写进去的值会被下一次 2s 采样直接覆盖，
+           反而让 PC 端误以为写入成功。所以非读功能码一律回异常 0x01。
+
+           放行后交给标准功能码分发器，makePacket_03 末尾调 sendMessage，
+           该函数按地址判断出口，0x02 会从 USART1 直接回 PC，
+           不会打到 RS485 总线上。寄存器越界则由 makePacket_03 回异常 0x02，
+           两种异常同样从 USART1 回 PC。
+
+           注意：目前只支持 0x03 读保持寄存器。若以后要用 0x04 读输入寄存器，
+           需要先在 transmitDataMake 里补 makePacket_04。 */
+        case 0x02:
+            if ((uint8_t)pcFrame[1] != ReadHoldingRegister)
+            {
+                sendException(&pcFrame[0], EX_ILLEGAL_FUNCTION);
+                break;
+            }
+            transmitDataMake(&pcFrame[0],len);
+            break;
+
+        default : bad_Addrs++; break;                        //既非 01 也非 02：静默丢弃
     }
 }    
 

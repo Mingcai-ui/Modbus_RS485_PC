@@ -10,7 +10,10 @@
 #define NUMBER_OF_REGISTER  10      /* 保持寄存器总数 (0x03/0x06/0x10) */
 #define NUMBER_OF_COIL      30      /* 线圈总数     (0x01/0x05/0x0F) */
 
-/* 缓冲区取 uint8_t 计数器上限 255，可容纳 Modbus 最大帧 (256 字节级) */
+/* 缓冲区长度 = Modbus 单帧合法上限 255 字节
+ * （0x10 写满 123 个寄存器：1+1+2+2+1+246+2 = 255）。
+ * 计数器是 uint8_t，255 刚好卡在上限，**不可改成 256** ——
+ * 否则 DataCounter 会回绕成 0，整帧被当空帧丢弃。 */
 #define BUFFERSIZE          255
 
 /* 帧间静默判帧时间 (ms)
@@ -51,7 +54,7 @@ typedef enum{
 extern uint32_t bad_SHORT;    /* 帧长 < 4：判帧阈值或链路问题 */
 extern uint32_t bad_LONG;     /* 超出 BUFFERSIZE，尾部字节已被丢弃 */
 extern uint32_t bad_CRC;      /* CRC 错：帧内容坏了 */
-extern uint32_t bad_Addrs;    /* 地址不是 0x01：PC 端配置写错 */
+extern uint32_t bad_Addrs;    /* 地址既非 0x01（RS485 变送器）也非 0x02（本机 DHT11） */
 
 /* ================== 接收状态 (中断与主循环共享，必须 volatile) ================== */
 extern volatile uint8_t RxInterruptFlag;            //UART2数据接收状态标志位
