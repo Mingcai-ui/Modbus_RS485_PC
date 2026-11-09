@@ -200,8 +200,6 @@ static FrameCheckResult checkFrame(const char *msg, uint8_t len)    //const防�
 {
     if (len < 4)    return FRAME_Too_SHORT;/* 最短合法帧 = 从机地址 + 功能码 + CRC(2) = 4 字节 */
 
-    /* 上界不在这里判：len 是 uint8_t，而中断已在 BUFFERSIZE 处封顶，
-       所以本函数的入参永远 <= 255，"超长"这件事它根本看不到。见调用处。 */
     return (MODBUS_CRC16(msg, len)?FRAME_CRC_ERR:FRAME_OK);
 }
 
@@ -510,7 +508,7 @@ void makePacket_16(char *msg, uint8_t Lenght)
  * ======================================================== */
 
 /* 读取 NumberOfCoil 个线圈需要几个数据字节 */
-uint8_t findByte(int16_t NumberOfCoil)
+uint8_t findByte(int16_t NumberOfCoil) 
 {
     if (NumberOfCoil <= 0)
     {
