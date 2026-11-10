@@ -31,6 +31,8 @@ targets:
         - Core/APP/Modbus
         - Core/APP/UART_Buf
         - Core/APP/DHT11
+        - Core/APP/MPU6050
+        - Core/APP/OLED
       libList: []
     excludeList: []
     settings: {}

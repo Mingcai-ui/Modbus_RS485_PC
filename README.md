@@ -8,7 +8,9 @@
 > - 其他地址 → 静默丢弃并计数
 >
 > STM32F103C8T6 + HAL，裸机 `while(1)`，无 RTOS。**当前版本 v1.0.0（main，纯透传桥）；
-> 本分支 `feat/modbus-router` 为 v2.0.0 候选**，新增路由与 02 从机，待上板实测后合并 main 并打 tag。
+> `feat/modbus-router` 为 v2.0.0 候选**（新增路由与 02 从机）；
+> 本分支 `MPU6050_makePacket` 为 v2.1.0 候选，在 v2.0.0 基础上加 MPU6050 采样与 OLED 显示。
+> 三者均待上板实测后合并 main 并打 tag。
 
 ---
 
@@ -32,12 +34,15 @@ PC 主站 (Modbus Poll / 串口助手)
 │          │         读 ModbusRegister[0..1] → USART1 回 PC │
 │          └─ 其他 → bad_Addrs++（丢弃）                     │
 │                                                           │
-│  DHT11(PA11) ── 主循环 2s 采样 ──> ModbusRegister[0..1]   │
+│  MPU6050 ── 主循环 100ms 采样 ──> OLED(0x3C) 显示         │
 └───────────────────────────────────────────────────────────┘
         │  USART2  9600 8N1  PA2/PA3 + PA1(DE/RE)
         ▼
 RS485 温湿度变送器（从机地址 0x01）
 ```
+
+> 注：上图里的本机从机数据源已变。`main.c` 现在只做 MPU6050 采样与 OLED 显示，
+> DHT11 采样已从主循环移除，`ModbusRegister[0..1]` 暂无人写入（详见更新日志 v2.1.0）。
 
 | | v1.0.0（main） | 本分支（v2.0.0 候选） |
 |---|---|---|
@@ -64,11 +69,13 @@ RS485 温湿度变送器（从机地址 0x01）
 
 | 文件 | 职责 |
 |---|---|
-| `Core/Src/main.c` | 初始化 + 置 PA1 接收态 + 启动两路 `HAL_UART_Receive_IT` + `DHT11_Init`；`while(1)` 轮询两个消费者 + 周期采样 DHT11 |
+| `Core/Src/main.c` | 初始化 + 置 PA1 接收态 + 启动两路 `HAL_UART_Receive_IT` + `OLED_Init` + `MPU6050_Init`（重试 3 次，失败降级为屏上提示）；`while(1)` 轮询两个消费者 + 100ms 采样 MPU6050 + 500ms 刷屏 |
 | `Core/APP/UART_Buf/UART_Buf.c/.h` | 两路接收缓冲 `PC_RX[]` / `ModbusRx[]`、字节计数器、`frameOverflow_PC` 溢出标志、`HAL_UART_RxCpltCallback` 分流、`HAL_UART_ErrorCallback` 双路恢复、`_write()` printf 重定向 |
 | `Core/APP/Modbus/modbus_rtu.c/.h` | 两路 1ms 判帧 `uartTimer()` / `uartTimer_PC()`、消费者 `uartDataHandler_PC()` / `uartDataHandler_Modbus()`、`checkFrame()` 判决、`sendMessage()`（按地址选出口）、`transmitDataMake()` + `makePacket_*` 功能码分发、`sendException()` 异常响应、四类丢弃计数 |
 | `Core/APP/CRC/CRC16.c/.h` | Modbus CRC16 —— `checkFrame()` 与 `makePacket_*` 都调用，多项式 0xA001 反射、初值 0xFFFF |
-| `Core/APP/DHT11/dht11.c/.h` | DHT11 单总线驱动（非阻塞调度 + 关中断读取），见 `DHT11/DHT11_介绍.md` |
+| `Core/APP/DHT11/dht11.c/.h` | DHT11 单总线驱动（非阻塞调度 + 关中断读取），见 `DHT11/DHT11_介绍.md`。**当前 main 已不再调用**，文件保留待定 |
+| `Core/APP/MPU6050/MPU6050.c/.h` | 六轴传感器驱动（I2C1 / PB8-PB9，地址 0x68）：唤醒 + 采样率 + 量程配置，一次 burst 读 14 字节（加速度 6 + 温度 2 + 角速度 6） |
+| `Core/APP/OLED/OLED.c/.h` + `OLED_Data.c/.h` | 江协科技 4 针 I2C OLED 驱动（SSD1306，地址 0x3C），移植时把软件 I2C 底层（`OLED_W_SCL/SDA`、`OLED_I2C_*`）整段换成 `HAL_I2C_Mem_Write`，与 MPU6050 共用硬件 I2C1 |
 | `Core/Src/stm32f1xx_it.c` | `SysTick_Handler` 挂两个判帧函数；`USART1/2_IRQHandler` → `HAL_UART_IRQHandler` |
 | `.eide/eide.yml` / `Modbus_RS485_PC.ioc` | EIDE 编译配置 / CubeMX 引脚与 NVIC 配置 |
 
@@ -93,7 +100,7 @@ PC  →  01 03 00 01 00 01 D5 CA     请求：读变送器保持寄存器 1 个
 PC  ←  01 03 02 01 14 B9 DB       应答：字节数 02 / 数据 0x0114(276)
 ```
 
-### 5.2 地址 02 本机 DHT11（待上板实测）
+### 5.2 地址 02 本机从机（数据源原为 DHT11，当前已停用）
 
 | 请求帧 | 应答帧 | 含义 |
 |---|---|---|
@@ -103,6 +110,9 @@ PC  ←  01 03 02 01 14 B9 DB       应答：字节数 02 / 数据 0x0114(276)
 
 > 寄存器布局：`0`=温度×10 的 int16 补码，`1`=湿度×10 的 uint16。温湿度变送器行业通用布局，
 > 换 DHT22 / SHT30 也不用改 PC 端。零下温度注意 PC 端要用**有符号**显示，否则 −52 会显示成 65484。
+>
+> ⚠️ **v2.1.0 起上述数据源已断**：`main.c` 不再驱动 DHT11，`ModbusRegister[0..1]` 无人写入，
+> 02 地址仍能正常应答 0x03，但返回的恒为 `00 00`。上表帧样例是 v2.0 采样还在时抓的，留作格式参考。
 
 ### 5.3 连续收发速率边界（2026-11-08 实测）
 
@@ -139,6 +149,14 @@ PC  ←  01 03 02 01 14 B9 DB       应答：字节数 02 / 数据 0x0114(276)
 
 > **规范：每次更新推送，都必须说明三段 —— 改了什么 / 加了什么 / 解决了什么。**
 > `git commit` 的 message、推送时的说明、以及此处的每一条记录，都按这个结构写。
+
+### v2.1.0 候选 · 2026-11-10 · `MPU6050_makePacket`（本分支，未合并 main / 未打 tag）
+
+- **改了什么**：`main.c` 的 `USER CODE` 区整体重写——删掉 `dht11.h` / `stdio.h` / `DHT11_LOG_ENABLE` 及其包着的旧串口打印块，主循环改为「100ms 采样 + 500ms 刷屏」两段独立节拍；MPU6050 初始化由死等 `while(MPU6050_Init(...) != 0)` 改为重试 3 次、失败降级为屏上提示；OLED 驱动的软件 I2C 底层（`OLED_W_SCL` / `OLED_W_SDA` / `OLED_GPIO_Init` / `OLED_I2C_Start/Stop/SendByte/ReadByte`）整段删除，`OLED_WriteCommand` / `OLED_WriteData` 改写为 `HAL_I2C_Mem_Write`；`.eide/eide.yml` 增补 `Core/APP/OLED` 头文件路径。
+- **加了什么**：`Core/APP/MPU6050/`（驱动：唤醒 + 1kHz 采样率 + ±2g / ±250dps 量程 + 14 字节 burst 读）；`Core/APP/OLED/`（江协科技 4 针 I2C 驱动 4 个文件，SSD1306 @0x3C）；`MPU6050_ShowRaw()` 刷屏函数（8X16 字体铺满 4 行：AX/AY、AZ/GX、GY/GZ、温度；固定位宽所以不用清屏、无残影）；`MPU_SAMPLE_MS` / `MPU_REFRESH_MS` / `MPU_INIT_RETRY` 三个节奏宏；初始化失败时屏上直接显示 `WHO_AM_I` 故障码。
+- **解决了什么**：① 三个编译硬伤——`last_mpu_tick` 未声明、`#if DHT11_LOG_ENABLE` 只开一个却配了两个 `#endif`、MPU 打印被 `DHT11_LOG_ENABLE=0` 整段吃掉（"编译过了也一行不打印"）；② 软件 I2C 与硬件 I2C1 抢 PB8/PB9——任何一次 GPIO 输出配置都会把引脚从 AF 模式拽回普通 IO，结果是屏写不进、传感器也读不到，现在统一走硬件 I2C1（屏 0x3C / 传感器 0x68，地址不冲突）；③ 原 OLED 驱动 `OLED_GPIO_Init()` 内部会调用 `MX_GPIO_Init()`，顺带把 RS485 方向脚 / LED / DHT11 引脚重配一遍，已随底层一并删除；④ 传感器未接时整机卡死在初始化、Modbus 不应答且现场无法定位故障；⑤ 刷屏 92ms 阻塞可能顶掉 Modbus 帧——已加「两路串口任一路正在收帧就先不刷」的让路判断（沿用 DHT11 那版的取舍）。
+
+> **验证**：`arm-none-eabi-gcc -Os` 全量编译 + 链接通过，`text 14544 / data 12 / bss 4276`（64KB Flash / 20KB RAM 余量充足），**未上板**。DHT11 驱动文件保留未删，去留待定。
 
 ### v2.0.0 候选 · 2026-11-08 · `feat/modbus-router`（本分支，未合并 main / 未打 tag）
 
