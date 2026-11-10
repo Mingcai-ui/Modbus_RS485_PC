@@ -30,6 +30,7 @@ targets:
         - Core/APP/CRC
         - Core/APP/Modbus
         - Core/APP/UART_Buf
+        - Core/APP/DHT11
       libList: []
     excludeList: []
     settings: {}
