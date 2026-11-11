@@ -19,7 +19,6 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "dma.h"
-#include "i2c.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -29,6 +28,7 @@
 #include "UART_Buf.h"
 #include "dht11.h"
 #include "stdio.h"
+#include "OLED.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -58,7 +58,6 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-DHT11_Handle_t dht11;      /* 本地温湿度传感器（PA11），后续作为 Modbus 从机地址 02 的数据源 */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -104,7 +103,6 @@ int main(void)
   MX_DMA_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
-  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_GPIO_WritePin(RS485_GPIO_Port, RS485_Pin, GPIO_PIN_RESET);
@@ -113,80 +111,35 @@ int main(void)
   HAL_UART_Receive_IT(&huart1, &uart1_RxData, 1);
   HAL_UART_Receive_IT(&huart2, &uart2_RxData, 1);
 
-  /*  DHT11 初始化（必须在 SystemClock_Config 之后，DWT 换算依赖 SystemCoreClock） */
-  DHT11_Init(&dht11);
-
+  OLED_Init();
+  OLED_Clear();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+    OLED_ShowString(0, 0, "bad_SHORT:",OLED_6X8);
+    OLED_ShowString(0, 8, "bad_LONG:",OLED_6X8);
+    OLED_ShowString(0, 16, "bad_CRC:",OLED_6X8);
+    OLED_ShowString(0, 24, "bad_Addrs:",OLED_6X8);
+    OLED_Update();
   while (1)
   {
-    uartDataHandler_PC();
-    uartDataHandler_Modbus();
+    uartDataHandler_PC();       // PC 侧数据处理
+    uartDataHandler_Modbus();   // Modbus 侧数据处理
 
-    /* ---------------- DHT11 周期采样 ----------------
-     * 无论是否打印都要跑：地址 0x02 的应答数据全部来自这份缓存。
-     *
-     * 只在两条总线都静默时才驱动传感器。DHT11_ReadFrame() 内部要关中断约
-     * 4ms（40 位 × 26~70us 的微秒级时序），若此刻 PC 正好在发帧，中断进不来
-     * 会直接 ORE 丢掉后续字节。总线忙就跳过本轮，状态机停在 START_LOW，
-     * 下一轮继续；20ms 起始低电平本身是非阻塞的，跳过几轮不影响 2s 节拍。 */
-    DHT11_Status dht_st = DHT11_BUSY;
+    OLED_ShowNum(60, 0, bad_SHORT, 2, OLED_6X8);    //显示短错误次数
+    OLED_ShowNum(60, 8, bad_LONG, 2, OLED_6X8);     //显示长错误次数
+    OLED_ShowNum(60, 16, bad_CRC, 2, OLED_6X8);     //显示CRC错误次数
+    OLED_ShowNum(60, 24, bad_Addrs, 2, OLED_6X8);   //显示地址错误次数
+    OLED_Update();
+  }
 
-    if (RxInterruptFlag_PC != SET && RxInterruptFlag != SET)
-    {
-      dht_st = DHT11_Handler(&dht11);
-    }
-
-    if (dht_st == DHT11_OK)
-    {
-      /* 写入本机保持寄存器，供地址 0x02 的 0x03 请求读取：
-       *   ModbusRegister[0] = 温度 ×10 的 int16 补码（27.5℃ → 275，-5.2℃ → -52）
-       *   ModbusRegister[1] = 湿度 ×10 的 uint16  （59.0%RH → 590）
-       * 这是温湿度变送器的行业通用布局，将来换 DHT22 / SHT30 也不用改 PC 端。
-       * 冷启动后首次读取成功前两个寄存器保持 0，PC 读到 0 即知传感器未就绪。 */
-      ModbusRegister[0] = (uint16_t)((int16_t)dht11.temp_int * 10 + dht11.temp_dec);
-      ModbusRegister[1] = (uint16_t)((uint16_t)dht11.humidity_int * 10 + dht11.humidity_dec);
-
-      HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);   /* 读到新数据翻转 LED 作心跳 */
-    }
-
-#if DHT11_LOG_ENABLE
-    /* 观测模式：把刚才的采样结果打印给 PC。
-     *
-     * 打印时机：只在 PC 侧总线静默时输出，避免 ASCII 文本混进 Modbus 二进制帧。
-     * 但 printf 是阻塞发送，若此刻 PC 正好开始发帧仍可能被打乱，
-     * 所以观测时把串口助手设为「只看不发」，不要同时用 Modbus Poll 轮询。 */
-    if (dht_st == DHT11_OK && RxInterruptFlag_PC != SET)
-    {
-      /* 用整数部分拼接，不用 %f：链接默认可能未开 -u _printf_float，
-       * 那样 %f 会静默输出空白，比报错更难查 */
-      printf("DHT11 T=%d.%dC  H=%d.%d%%RH\r\n",
-             dht11.temp_int, dht11.temp_dec,
-             dht11.humidity_int, dht11.humidity_dec);
-#if DHT11_DEBUG_TIMES
-      /* 排障附加信息：需同时把 dht11.h 的 DHT11_DEBUG_TIMES 置 1 */
-      printf("  raw: %02X %02X %02X %02X %02X\r\n",
-             DHT11_DbgRaw[0], DHT11_DbgRaw[1], DHT11_DbgRaw[2],
-             DHT11_DbgRaw[3], DHT11_DbgRaw[4]);
-      printf("  bit0-11 us: %u %u %u %u %u %u %u %u %u %u %u %u\r\n",
-             DHT11_DbgBitUs[0],  DHT11_DbgBitUs[1],  DHT11_DbgBitUs[2],
-             DHT11_DbgBitUs[3],  DHT11_DbgBitUs[4],  DHT11_DbgBitUs[5],
-             DHT11_DbgBitUs[6],  DHT11_DbgBitUs[7],  DHT11_DbgBitUs[8],
-             DHT11_DbgBitUs[9],  DHT11_DbgBitUs[10], DHT11_DbgBitUs[11]);
-#endif
-    }
-    else if (dht_st == DHT11_ERROR && RxInterruptFlag_PC != SET)
-    {
-      printf("DHT11 FAIL\r\n");
-    }
-#endif /* DHT11_LOG_ENABLE */
+ /* DHT11_LOG_ENABLE */
 
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-  }
+  
   /* USER CODE END 3 */
 }
 
