@@ -140,6 +140,13 @@ PC  ←  01 03 02 01 14 B9 DB       应答：字节数 02 / 数据 0x0114(276)
 > **规范：每次更新推送，都必须说明三段 —— 改了什么 / 加了什么 / 解决了什么。**
 > `git commit` 的 message、推送时的说明、以及此处的每一条记录，都按这个结构写。
 
+### v2.1.0 候选 · 2026-11-12 · `feat/slave02-dht11`（本分支，未合并 main / 未打 tag）
+
+- **改了什么**：`sendMessage()`、`reply_port()`、`uartDataHandler_Modbus()` 三处发送出口由直接调 `HAL_UART_Transmit` 改为统一走 `mb_port_send()`；`main.c` 的 RS485 方向脚初始化由 `HAL_GPIO_WritePin` 改为 `mb_port_init()`；`dht11.c` 由「裸函数 + 全局变量」改为句柄式 API（`DHT11_Handle_t` + `Init/Handler/GetTemp/GetHumi`），并补全逐行注释（仅注释，逻辑未变）；CubeMX 增加 USART3（PB10=TX / PB11=RX，115200 8N1）及其中断。
+- **加了什么**：`Core/APP/Modbus/Mb_port.c/.h` 端口抽象层——链路层只认 `MB_PORT_PC` / `MB_PORT_RS485` 两个编号，DE 拉高拉低与「发送超时随帧长走」都收进端口层；`main.c` 主循环恢复 DHT11 周期采样（2s），成功时写 `ModbusRegister[0..1]`，并在 OLED 上显示温度/湿度原始值；USART3 初始化、MSP 配置与 `USART3_IRQHandler`；`/.workbuddy/` 加入 `.gitignore`（工作区记忆与参考实现不入库）；主站 P0 参考实现（表驱动轮询 + 接收分流 + PC 帧排队，见 `.workbuddy/ref/master-p0/`，未纳入版本库）。
+- **解决了什么**：RS485 方向脚散落在 `main.c` 与 `modbus_rtu.c` 两处、改一处忘一处的隐患；OLED 改造时 DHT11 采样块被整块删除、导致 0x02 地址寄存器恒 0 的问题；为主站日志腾出独立串口通道（USART3），避免 `printf` 字节插进 PC 的 Modbus 帧流把应答打断。
+- **已知未修（下一轮处理）**：`main.c` 的 `(uint16_t)DHT11_GetTemp(&dht) * 10.0f` 是「先截断再乘」，27.5℃ 会记成 270 而非 275；`UART_Buf.c` 把 PC 侧接收上限由 `BUFFERSIZE` 改成 `8`，与 `bad_LONG`（>255）语义冲突，将来开放 0x06/0x10 写功能码时合法长帧会被误判；`_write()` 仍重定向到 `huart1`，日志尚未真正切到 USART3。
+
 ### v2.0.0 候选 · 2026-11-08 · `feat/modbus-router`（本分支，未合并 main / 未打 tag）
 
 - **改了什么**：`sendMessage()` 由「固定走 USART2 + 拉高 DE」改为按帧头地址选出口（0x01 走 RS485，其余写 USART1）；`uartDataHandler_PC()` 由裸转发重构为「溢出检查 → 长度/CRC 判决 → 地址 switch」；`main.c` 把 DHT11 采样抽到 `#if DHT11_LOG_ENABLE` 之外；`MODBUS_CRC16` 形参改 `const char *`；`BUFFERSIZE` 注释订正为「255 = 0x10 写满 123 寄存器的 ADU 上限」。

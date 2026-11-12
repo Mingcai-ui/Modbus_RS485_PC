@@ -9,7 +9,7 @@
 #define SLAVEID             1       /* 从机地址 */
 #define NUMBER_OF_REGISTER  10      /* 保持寄存器总数 (0x03/0x06/0x10) */
 #define NUMBER_OF_COIL      30      /* 线圈总数     (0x01/0x05/0x0F) */
-
+#define SLAVE02_REG_COUNT   2       /* 02 从机对外暴露的寄存器数（协议维度） */
 /* 缓冲区长度 = Modbus 单帧合法上限 255 字节
  * （0x10 写满 123 个寄存器：1+1+2+2+1+246+2 = 255）。
  * 计数器是 uint8_t，255 刚好卡在上限，**不可改成 256** ——
@@ -27,7 +27,7 @@
 #define EX_ILLEGAL_VALUE    0x03    /* 数据值非法 */
 
 /* ================== 全局数据区 (定义在 modbus_rtu.c) ================== */
-extern uint16_t ModbusRegister[NUMBER_OF_REGISTER];
+extern uint16_t ModbusRegister[2];
 extern bool     ModbusCoil[NUMBER_OF_COIL];
 
 /* ================== 功能码枚举 ================== */
@@ -69,25 +69,26 @@ extern volatile uint8_t uartPacketComplatedFlag_PC; //UART1收到完整帧数据
 /* ================== 接收与处理 ================== */
 void uartDataHandler(void);                          /* main 的 while(1) 里轮询调用 */
 
-void uartTimer(void);                                /* SysTick 中断 (1ms) 里调用 */
-void uartTimer_PC(void);
+
 
 void uartDataHandler_PC(void);
 void uartDataHandler_Modbus(void);
-void transmitDataMake(char *msg, uint8_t Lenght);
+void transmitDataMake(char *msg, uint8_t Lenght, const uint16_t *regs, uint16_t regCount);
 
 /* ================== 具体功能码 ================== */
-void makePacket_01(char *msg, uint8_t Lenght);
-void makePacket_03(char *msg, uint8_t Lenght);
-void makePacket_05(char *msg, uint8_t Lenght);
-void makePacket_06(char *msg, uint8_t Lenght);
-void makePacket_15(char *msg, uint8_t Lenght);
-void makePacket_16(char *msg, uint8_t Lenght);
+// void makePacket_01(char *msg, uint8_t Lenght);
+void makePacket_03(char *msg, uint8_t Lenght , const uint16_t *regs, uint16_t regCount);
+// void makePacket_05(char *msg, uint8_t Lenght);
+// void makePacket_06(char *msg, uint8_t Lenght);
+// void makePacket_15(char *msg, uint8_t Lenght);
+// void makePacket_16(char *msg, uint8_t Lenght);
 
 /* ================== 工具函数 ================== */
 void     sendMessage(char *msg, uint8_t len);
 void     sendException(char *msg, uint8_t code);
 uint8_t  findByte(int16_t NumberOfCoil);
-void printf_HXL(const char *msg, uint8_t Lenght);
+
+void uartTimer(void);                                /* SysTick 中断 (1ms) 里调用 */
+void uartTimer_PC(void);
 
 #endif /* __MODBUS_RTU_H__ */

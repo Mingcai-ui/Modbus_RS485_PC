@@ -11,22 +11,20 @@ char ModbusRx[BUFFERSIZE];      /* UART2中断写入的原始接收区 */
 
 volatile uint8_t DataCounter_PC;       /* 接收数据计数器 */
 volatile uint8_t DataCounter_Modbus;       /* 接收数据计数器 */
-volatile uint8_t frameOverflow_PC;     /* USART1 本帧已超出缓冲区，尾部字节被丢弃 */
+volatile uint8_t 
+frameOverflow_PC;     /* USART1 本帧已超出缓冲区，尾部字节被丢弃 */
 
 /*  串口接收中断回调 (每收到 1 个字节触发一次) */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART1)
     {
-        if(DataCounter_PC < BUFFERSIZE)
+        if(DataCounter_PC < 8)//请求帧固定为8字节,应答帧长度才要限制在255
         {
             PC_RX[DataCounter_PC++] = uart1_RxData;
         }
         else
         {
-            /* 缓冲区写满，本帧后续字节无处可放。
-             * 这个事实只有中断知道：主循环只能看到 len = 255，
-             * 与一条合法的 255 字节长帧完全无法区分，所以必须在这里置标志。 */
             frameOverflow_PC = SET;
         }
 

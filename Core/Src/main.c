@@ -29,6 +29,8 @@
 #include "dht11.h"
 #include "stdio.h"
 #include "OLED.h"
+#include "dht11.h"
+#include "Mb_port.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -63,7 +65,7 @@
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-
+DHT11_Handle_t dht;
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -103,9 +105,10 @@ int main(void)
   MX_DMA_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  HAL_GPIO_WritePin(RS485_GPIO_Port, RS485_Pin, GPIO_PIN_RESET);
+  mb_port_init();
 
   /*  启动串口中断接收  */
   HAL_UART_Receive_IT(&huart1, &uart1_RxData, 1);
@@ -113,6 +116,7 @@ int main(void)
 
   OLED_Init();
   OLED_Clear();
+  DHT11_Init(&dht);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -124,13 +128,25 @@ int main(void)
     OLED_Update();
   while (1)
   {
+    DHT11_Status st = DHT11_Handler(&dht);
+
     uartDataHandler_PC();       // PC 侧数据处理
     uartDataHandler_Modbus();   // Modbus 侧数据处理
+
+    if (st == DHT11_OK)
+    {
+      ModbusRegister[0]= (uint16_t)DHT11_GetTemp(&dht) * 10.0f;
+      ModbusRegister[1]= (uint16_t)DHT11_GetHumi(&dht) * 10.0f;
+    }
 
     OLED_ShowNum(60, 0, bad_SHORT, 2, OLED_6X8);    //显示短错误次数
     OLED_ShowNum(60, 8, bad_LONG, 2, OLED_6X8);     //显示长错误次数
     OLED_ShowNum(60, 16, bad_CRC, 2, OLED_6X8);     //显示CRC错误次数
     OLED_ShowNum(60, 24, bad_Addrs, 2, OLED_6X8);   //显示地址错误次数
+
+    OLED_ShowNum(0, 32, ModbusRegister[0], 4,OLED_6X8);
+    OLED_ShowNum(0, 48, ModbusRegister[1], 4,OLED_6X8);
+
     OLED_Update();
   }
 

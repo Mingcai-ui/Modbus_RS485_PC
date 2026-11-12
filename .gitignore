@@ -10,6 +10,9 @@
 /obj
 /out
 
+# 工作区记忆与参考实现（本地保留，不入版本库）
+/.workbuddy/
+
 # eide template
 *.ept
 *.eide-template
