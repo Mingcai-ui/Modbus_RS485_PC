@@ -64,12 +64,16 @@ RS485 温湿度变送器（从机地址 0x01）
 
 | 文件 | 职责 |
 |---|---|
-| `Core/Src/main.c` | 初始化 + 置 PA1 接收态 + 启动两路 `HAL_UART_Receive_IT` + `DHT11_Init`；`while(1)` 轮询两个消费者 + 周期采样 DHT11 |
-| `Core/APP/UART_Buf/UART_Buf.c/.h` | 两路接收缓冲 `PC_RX[]` / `ModbusRx[]`、字节计数器、`frameOverflow_PC` 溢出标志、`HAL_UART_RxCpltCallback` 分流、`HAL_UART_ErrorCallback` 双路恢复、`_write()` printf 重定向 |
-| `Core/APP/Modbus/modbus_rtu.c/.h` | 两路 1ms 判帧 `uartTimer()` / `uartTimer_PC()`、消费者 `uartDataHandler_PC()` / `uartDataHandler_Modbus()`、`checkFrame()` 判决、`sendMessage()`（按地址选出口）、`transmitDataMake()` + `makePacket_*` 功能码分发、`sendException()` 异常响应、四类丢弃计数 |
+| `Core/Src/main.c` | 初始化 + `mb_port_init()` + 注册 `frame_tick` + `frame_init()` 启动两路接收 + `DHT11_Init`；`while(1)` 轮询两个消费者 + 周期采样 DHT11 + OLED 刷屏 |
+| `Core/APP/Transport/frame.c/.h` | 两路接收缓冲 + 判帧状态机 + `HAL_UART_RxCpltCallback` / `HAL_UART_ErrorCallback`；通道用 `frame_slot_t channels[]` 数组 + `frame_ch_t` 枚举，取代「变量名加 `_PC` 后缀」的复制粘贴；上层只通过 `frame_poll()` 取帧 |
+| `Core/APP/Transport/console.c/.h` | `_write()` printf 重定向到 USART3（强符号覆盖 `syscalls.c` 的 weak 版本，不改 CubeMX 生成文件） |
+| `Core/APP/Core/tick.c/.h` | 1ms tick 分发器（已启用）：`tick_register()` 注册回调，`SysTick_Handler` 只调 `tick_handle()`；中断层不再认识协议层 |
+| `Core/APP/Core/component.c/.h`、`critical.c/.h` | 组件注册表、可重入临界区 —— M3/M4 预留骨架，当前未被调用 |
+| `Core/APP/Modbus/modbus_rtu.c/.h` | 消费者 `uartDataHandler_PC()` / `uartDataHandler_Modbus()`、`checkFrame()` 判决、`sendMessage()`（按地址选出口）、`transmitDataMake()` + `makePacket_*` 功能码分发、`sendException()` 异常响应、四类丢弃计数（判帧已下沉到 `Transport/frame`） |
 | `Core/APP/CRC/CRC16.c/.h` | Modbus CRC16 —— `checkFrame()` 与 `makePacket_*` 都调用，多项式 0xA001 反射、初值 0xFFFF |
 | `Core/APP/DHT11/dht11.c/.h` | DHT11 单总线驱动（非阻塞调度 + 关中断读取），见 `DHT11/DHT11_介绍.md` |
-| `Core/Src/stm32f1xx_it.c` | `SysTick_Handler` 挂两个判帧函数；`USART1/2_IRQHandler` → `HAL_UART_IRQHandler` |
+| `Core/Src/stm32f1xx_it.c` | `SysTick_Handler` 调 `tick_handle()` 统一分发（不再直接认识 Modbus）；`USART1/2_IRQHandler` → `HAL_UART_IRQHandler` |
+| `tools/build.sh` | 独立命令行编译验证脚本：用 EIDE 自带 GCC 输出到 `build/makecheck/`，不干扰 EIDE 的 `build/Debug` |
 | `.eide/eide.yml` / `Modbus_RS485_PC.ioc` | EIDE 编译配置 / CubeMX 引脚与 NVIC 配置 |
 
 ## 4. 关键实现点
@@ -129,7 +133,8 @@ PC  ←  01 03 02 01 14 B9 DB       应答：字节数 02 / 数据 0x0114(276)
 
 ## 7. 构建
 
-- **EIDE**（本项目实际使用）：打开 `Modbus_RS485_PC.code-workspace`，`.eide/eide.yml` 已配好头文件路径（`Core/APP/Modbus`、`Core/APP/UART_Buf`、`Core/APP/CRC`、`Core/APP/DHT11`），arm-none-eabi-gcc 编译，产物在 `build/`（已忽略）。
+- **EIDE**（本项目实际使用）：打开 `Modbus_RS485_PC.code-workspace`，`.eide/eide.yml` 已配好头文件路径（`Core/APP/{Core,Transport,Modbus,CRC,DHT11,OLED,MPU6050}`），arm-none-eabi-gcc 编译，产物在 `build/`（已忽略）。
+- **命令行验证**：`bash tools/build.sh`，用 EIDE 自带的 GCC 输出到 `build/makecheck/`，不干扰 EIDE 的 `build/Debug`，适合每步改动后快速确认能编译。
 - **STM32CubeIDE**：可直接导入 `.project` / `.cproject`。修改引脚后重新生成代码时，注意 `stm32f1xx_it.c` 的 `USER CODE` 区与 NVIC 勾选不要被覆盖。
 - 仓库已忽略 `/build`、`/bin`、`/obj`、`/out`、`/.settings` 等产物。
 
@@ -139,6 +144,13 @@ PC  ←  01 03 02 01 14 B9 DB       应答：字节数 02 / 数据 0x0114(276)
 
 > **规范：每次更新推送，都必须说明三段 —— 改了什么 / 加了什么 / 解决了什么。**
 > `git commit` 的 message、推送时的说明、以及此处的每一条记录，都按这个结构写。
+
+### v2.2.0 候选 · 2026-11-14 · `modbus_congji`（重构 M0–M2 + OLED 硬件 I2C）
+
+- **改了什么**：`stm32f1xx_it.c` 的 `SysTick_Handler` 由直接调 `uartTimer()` / `uartTimer_PC()` 改为调 `tick_handle()`，`#include "modbus_rtu.h"` 改为 `"tick.h"`；`modbus_rtu.c/.h` 删除判帧三件套（`RxInterruptFlag` / `uartTimeCounter` / `uartPacketComplatedFlag` 及 `_PC` 版）、`uartTimer()` / `uartTimer_PC()` 与 `FRAME_GAP_MS`，两个消费者改用 `frame_poll()`；`main.c` 启动由两句 `HAL_UART_Receive_IT` 改为 `frame_init()`、tick 回调改注册 `frame_tick`；`_write()` 由 USART1 改为 USART3；OLED 由软件模拟 I2C 改回硬件 I2C1（PB8/PB9），引入 MPU6050 并增加 `MX_I2C1_Init()`；`.eide/eide.yml` 头文件路径去 `UART_Buf`、增 `Core/APP/Core` 与 `Core/APP/Transport`；删除 `Core/APP/UART_Buf/`。
+- **加了什么**：`Core/APP/Core/{component,tick,critical}.c/.h` —— 组件注册表、1ms tick 分发器、可重入临界区三个可替换抽象（`tick` 已启用，`component`/`critical` 为 M3/M4 预留骨架，当前未调用）；`Core/APP/Transport/frame.c/.h` —— 两路接收缓冲 + 判帧状态机 + 两个 HAL 回调，通道用 `frame_slot_t channels[]` 数组 + `frame_ch_t` 枚举取代复制粘贴；`Core/APP/Transport/console.c/.h` —— 日志通道；`tools/build.sh` —— 独立命令行编译脚本（EIDE 自带 GCC 14.3.1，输出 `build/makecheck/`，不干扰 `build/Debug`）。
+- **解决了什么**：`SysTick` 中断文件反向依赖具体协议模块（换协议就要改中断文件）的问题；`UART_Buf.h` ↔ `modbus_rtu.h` 互相 include 的循环依赖；PC 侧接收上限被写死 8 字节、与 `bad_LONG`（>255）语义冲突的问题（统一为 255）；`printf` 与 Modbus 帧流共用 USART1、ASCII 日志插进二进制帧导致 PC 端乱码的问题（切 USART3）；判帧逻辑两份复制粘贴、加第三路就要再抄一遍的问题（合并为一个 `for` 循环）。**并定位了 16ms 压测丢包从 10% 劣化到 99% 的根因**：`OLED_Update()` 每轮阻塞刷 8 页（约 93ms @ I2C 100kHz），主循环周期被拉到约 100ms，PC 的 6 帧在缓冲里粘连成 48 字节 → CRC 全错整批丢弃；协议路径本身无问题（把 while 内 OLED 调用注释后 0 丢包）。
+- **已知未修（下一轮处理）**：`main.c:137` 的 `(uint16_t)DHT11_GetTemp(&dht) * 10.0f` 仍是「先截断再乘」（B1，25.6℃ 会记成 250）；`DHT11_LOG_ENABLE` 已沦为无任何 `#if` 引用的死宏，改它不会打印；OLED 每轮全屏刷新未降频（需 tick 节流 + `OLED_UpdateArea` + I2C 400kHz 三杠杆并行）；`FRAME_GAP_MS = 5` 决定吞吐上限约 175 帧/秒，高吞吐从未被真正验证（PC 侧 USB-串口 Latency Timer 默认 16ms，标称「1ms 间隔」在线上实际仍是约 16ms）。
 
 ### v2.1.0 候选 · 2026-11-12 · `feat/slave02-dht11`（本分支，未合并 main / 未打 tag）
 

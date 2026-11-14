@@ -3,19 +3,11 @@
 
 #include <stdint.h>
 #include "OLED_Data.h"
-#include "gpio.h"
-
 /**************************
- * 在配置GPIO引脚时，命名为OLED_SCL和OLED_SDA即可使用
- * GPIO配置(GPIO_Output)
- * GPIO mode = Output Open Drain
- * GPIO Pull-up/Pull-down = No pull-up and no pull-dowm
+ * 通信接口：硬件 I2C1（PB8=SCL / PB9=SDA）
+ * 由 CubeMX 生成，OLED 侧不再关心引脚与电平
 **************************/
 /*参数宏定义*********************/
-#define     SCL_PIN     OLED_SCL_Pin
-#define     SCL_GPIOX   OLED_SCL_GPIO_Port
-#define     SDA_PIN     OLED_SDA_Pin
-#define     SDA_GPIOX   OLED_SDA_GPIO_Port
 
 /*FontSize参数取值*/
 /*此参数值不仅用于判断，而且用于计算横向字符偏移，默认值为字体像素宽度*/
@@ -33,12 +25,6 @@
 
 /*初始化函数*/
 void OLED_Init(void);
-
-/*I2C函数（供MPU6050等外部器件复用）*/
-void OLED_I2C_Start(void);
-void OLED_I2C_Stop(void);
-void OLED_I2C_SendByte(uint8_t Byte);
-uint8_t OLED_I2C_ReadByte(uint8_t Ack);
 
 /*更新函数*/
 void OLED_Update(void);

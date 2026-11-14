@@ -19,18 +19,22 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "dma.h"
+#include "i2c.h"
 #include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "modbus_rtu.h"
-#include "UART_Buf.h"
+#include "frame.h"
+#include "console.h"
 #include "dht11.h"
 #include "stdio.h"
 #include "OLED.h"
 #include "dht11.h"
 #include "Mb_port.h"
+#include "mpu6050.h"
+#include "tick.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -40,16 +44,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* DHT11 调试输出开关：1 = 每 2s 从 USART1 打印一次读数，0 = 仅采样不打印。
- *
- * 注意：USART1 同时是 PC 侧 Modbus 链路，printf 输出的是 ASCII 文本，
- * 若与 Modbus 二进制帧交叠，PC 端会看到乱码、CRC 校验必错。
- * 因此打印前判断 RxInterruptFlag_PC == RESET（PC 侧总线静默）才输出。
- *
- * 2026-11-08：单总线驱动已上板验证通过（raw=3B 00 1B 05 5B，H=59.0% T=27.5℃，
- * err 恒 0），故置 0。需要再观测时改回 1，并把 dht11.h 的 DHT11_DEBUG_TIMES
- * 一并改回 1，才能打印原始字节与位宽。 */
-#define DHT11_LOG_ENABLE   0
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -106,13 +101,17 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
   mb_port_init();
 
+  /* Modbus 判帧定时：注册为 1ms tick 回调 */
+  tick_register(frame_tick);
+
   /*  启动串口中断接收  */
-  HAL_UART_Receive_IT(&huart1, &uart1_RxData, 1);
-  HAL_UART_Receive_IT(&huart2, &uart2_RxData, 1);
+  frame_init();
+  console_init();
 
   OLED_Init();
   OLED_Clear();
@@ -121,11 +120,12 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-    OLED_ShowString(0, 0, "bad_SHORT:",OLED_6X8);
-    OLED_ShowString(0, 8, "bad_LONG:",OLED_6X8);
-    OLED_ShowString(0, 16, "bad_CRC:",OLED_6X8);
-    OLED_ShowString(0, 24, "bad_Addrs:",OLED_6X8);
-    OLED_Update();
+  OLED_Clear();
+  OLED_ShowString(0, 0, "bad_SHORT:",OLED_6X8);
+  OLED_ShowString(0, 8, "bad_LONG:",OLED_6X8);
+  OLED_ShowString(0, 16, "bad_CRC:",OLED_6X8);
+  OLED_ShowString(0, 24, "bad_Addrs:",OLED_6X8);
+  OLED_Update();
   while (1)
   {
     DHT11_Status st = DHT11_Handler(&dht);
@@ -139,15 +139,14 @@ int main(void)
       ModbusRegister[1]= (uint16_t)DHT11_GetHumi(&dht) * 10.0f;
     }
 
-    OLED_ShowNum(60, 0, bad_SHORT, 2, OLED_6X8);    //显示短错误次数
-    OLED_ShowNum(60, 8, bad_LONG, 2, OLED_6X8);     //显示长错误次数
-    OLED_ShowNum(60, 16, bad_CRC, 2, OLED_6X8);     //显示CRC错误次数
-    OLED_ShowNum(60, 24, bad_Addrs, 2, OLED_6X8);   //显示地址错误次数
+    // OLED_ShowNum(60, 0, bad_SHORT, 2, OLED_6X8);    //显示短错误次数
+    // OLED_ShowNum(60, 8, bad_LONG, 2, OLED_6X8);     //显示长错误次数
+    // OLED_ShowNum(60, 16, bad_CRC, 2, OLED_6X8);     //显示CRC错误次数
+    // OLED_ShowNum(60, 24, bad_Addrs, 2, OLED_6X8);   //显示地址错误次数
 
-    OLED_ShowNum(0, 32, ModbusRegister[0], 4,OLED_6X8);
-    OLED_ShowNum(0, 48, ModbusRegister[1], 4,OLED_6X8);
-
-    OLED_Update();
+    // OLED_ShowNum(0, 32, ModbusRegister[0], 4,OLED_6X8);
+    // OLED_ShowNum(0, 40, ModbusRegister[1], 4,OLED_6X8);
+    // OLED_Update();
   }
 
  /* DHT11_LOG_ENABLE */

@@ -12,22 +12,12 @@
 #include "main.h"
 #include "stdio.h"
 #include "CRC16.h"
-#include "UART_Buf.h"
+#include "frame.h"
 #include "usart.h"
 #include "Mb_port.h"
 /* ================== 全局数据区 ================== */
 uint16_t ModbusRegister[2];
 bool     ModbusCoil[NUMBER_OF_COIL];
-
-/* ================== 接收状态 ================== */
-volatile uint8_t RxInterruptFlag;               //UART2数据接收状态标志位
-volatile uint8_t uartTimeCounter;               //UART2数据间隔计数器
-volatile uint8_t uartPacketComplatedFlag;       //UART2收到完整帧数据标志位
-
-volatile uint8_t RxInterruptFlag_PC;            //UART1数据接收状态标志位
-volatile uint8_t uartTimeCounter_PC;            //UART1数据间隔计数器
-volatile uint8_t uartPacketComplatedFlag_PC;    //UART1收到完整帧数据标志位
-
 
 char tempModbusRx[BUFFERSIZE];   /* 拷贝出来处理，避免处理期间被中断改写 */
 char ModbusTx[BUFFERSIZE];       /* 应答组包区 */
@@ -105,23 +95,12 @@ static FrameCheckResult checkFrame(const char *msg, uint8_t len)    //const防�
 // PC 侧数据处理
 void uartDataHandler_PC(void)
 {
-    if(uartPacketComplatedFlag_PC != SET) return;
-
-    uartPacketComplatedFlag_PC=RESET;       //完整帧标志位清零
-    uint8_t len = DataCounter_PC;
-    DataCounter_PC=0;             //长度指针清零
-
-    /* 超长标志先取走再清零：无论本帧后面怎么走，都不能残留到下一帧 */
-    uint8_t overflowed = frameOverflow_PC;
-    frameOverflow_PC = RESET;
-
-    if(len == 0) return;
-
-    memcpy(pcFrame,PC_RX,len);    //拷贝PC发送的数据
-    memset(PC_RX,0,BUFFERSIZE);   //UART1缓冲区清空
+    uint8_t overflowed = 0;
+    uint8_t len = frame_poll(FRAME_CH_PC, (uint8_t *)pcFrame, &overflowed);
+    if (len == 0) return;
 
     /* 把"超长"折进同一个判决变量，下面只需要一处分支。
-       超长的证据只存在于中断里，所以由标记转成枚举值。 */
+       超长的证据只存在于中断里，由 frame_poll 转出。 */
     FrameCheckResult verdict = overflowed ? FRAME_Too_LONG : checkFrame(pcFrame, len);
 
     if(verdict != FRAME_OK) //判断帧是否合法
@@ -155,15 +134,9 @@ void uartDataHandler_PC(void)
 // Modbus 侧数据处理
 void uartDataHandler_Modbus(void)
 {
-    if(uartPacketComplatedFlag != SET) return;
-    uartPacketComplatedFlag=RESET;      //完整帧标志位清零
+    uint8_t len = frame_poll(FRAME_CH_RS485, (uint8_t *)rsFrame, NULL);
+    if (len == 0) return;
 
-    uint8_t len = DataCounter_Modbus;   //取出长度
-    DataCounter_Modbus = 0;             //长度指针清零
-
-    if(len == 0) return;
-    memcpy(rsFrame,ModbusRx,len);
-    memset(ModbusRx,0,BUFFERSIZE);  //UART2缓冲区清空
     (void)mb_port_send(MB_PORT_PC, (const uint8_t *)rsFrame, len);   //将接收到的数据回显
     // printf_HXL(&rsFrame[0],len); //二进制格式回显
 }
@@ -402,38 +375,6 @@ uint8_t findByte(int16_t NumberOfCoil)
         return 0;
     }
     return (uint8_t)((NumberOfCoil + 7) / 8);
-}
-
-/* ========================================================
-        帧结束判断 (SysTick 中断里每 1ms 调用一次)
- * ======================================================== */
-void uartTimer(void)
-{
-    if (RxInterruptFlag != SET)
-    {
-        return;
-    }
-
-    if (++uartTimeCounter >= FRAME_GAP_MS)   /* 静默够久，认为一帧结束 */
-    {
-        RxInterruptFlag         = RESET;
-        uartTimeCounter         = 0;
-        uartPacketComplatedFlag = SET;      //取到完整的一帧数据
-    }
-}
-void uartTimer_PC(void)
-{
-    if (RxInterruptFlag_PC != SET)
-    {
-        return;
-    }
-
-    if (++uartTimeCounter_PC >= FRAME_GAP_MS)   /* 静默够久，认为一帧结束 */
-    {
-        RxInterruptFlag_PC         = RESET;
-        uartTimeCounter_PC         = 0;
-        uartPacketComplatedFlag_PC = SET;      //取到完整的一帧数据
-    }
 }
 
 /* Modbus CRC16，多项式 0xA001 (反向 0x8005)，初值 0xFFFF */

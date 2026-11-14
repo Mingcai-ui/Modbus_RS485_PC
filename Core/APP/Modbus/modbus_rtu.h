@@ -16,11 +16,6 @@
  * 否则 DataCounter 会回绕成 0，整帧被当空帧丢弃。 */
 #define BUFFERSIZE          255
 
-/* 帧间静默判帧时间 (ms)
- * 9600bps 8N1 : 1 字符 = 10bit / 9600 = 1.04ms , 3.5T ≈ 3.65ms
- * 取 5ms 留出 RS485 收发器切换余量；SysTick 1ms 计数，精度 1ms 够用 */
-#define FRAME_GAP_MS        5
-
 /* Modbus 异常码 */
 #define EX_ILLEGAL_FUNCTION 0x01    /* 从机不支持该功能码 */
 #define EX_ILLEGAL_ADDRESS  0x02    /* 数据地址越界 */
@@ -56,16 +51,6 @@ extern uint32_t bad_LONG;     /* 超出 BUFFERSIZE，尾部字节已被丢弃 */
 extern uint32_t bad_CRC;      /* CRC 错：帧内容坏了 */
 extern uint32_t bad_Addrs;    /* 地址既非 0x01（RS485 变送器）也非 0x02（本机 DHT11） */
 
-/* ================== 接收状态 (中断与主循环共享，必须 volatile) ================== */
-extern volatile uint8_t RxInterruptFlag;            //UART2数据接收状态标志位
-extern volatile uint8_t uartTimeCounter;            //UART2数据间隔计数器
-extern volatile uint8_t uartPacketComplatedFlag;    //UART2收到完整帧数据标志位
-
-extern volatile uint8_t RxInterruptFlag_PC;         //UART1数据接收状态标志位
-extern volatile uint8_t uartTimeCounter_PC;         //UART1数据间隔计数器
-extern volatile uint8_t uartPacketComplatedFlag_PC; //UART1收到完整帧数据标志位 
-
-
 /* ================== 接收与处理 ================== */
 void uartDataHandler(void);                          /* main 的 while(1) 里轮询调用 */
 
@@ -87,8 +72,5 @@ void makePacket_03(char *msg, uint8_t Lenght , const uint16_t *regs, uint16_t re
 void     sendMessage(char *msg, uint8_t len);
 void     sendException(char *msg, uint8_t code);
 uint8_t  findByte(int16_t NumberOfCoil);
-
-void uartTimer(void);                                /* SysTick 中断 (1ms) 里调用 */
-void uartTimer_PC(void);
 
 #endif /* __MODBUS_RTU_H__ */
