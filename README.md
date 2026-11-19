@@ -64,12 +64,15 @@ RS485 温湿度变送器（从机地址 0x01）
 
 | 文件 | 职责 |
 |---|---|
-| `Core/Src/main.c` | 初始化 + `mb_port_init()` + 注册 `frame_tick` + `frame_init()` 启动两路接收 + `DHT11_Init`；`while(1)` 轮询两个消费者 + 周期采样 DHT11 + OLED 刷屏 |
+| `Core/Src/main.c` | 初始化 + `mb_port_init()` + `modbus_init()`（清寄存器表/诊断计数）+ 注册 `frame_tick` + `frame_init()` 启动两路接收 + `DHT11_Init`；`while(1)` 轮询两个消费者 + 周期采样 DHT11（经 `reg_write()` 写入）+ OLED 刷屏 |
 | `Core/APP/Transport/frame.c/.h` | 两路接收缓冲 + 判帧状态机 + `HAL_UART_RxCpltCallback` / `HAL_UART_ErrorCallback`；通道用 `frame_slot_t channels[]` 数组 + `frame_ch_t` 枚举，取代「变量名加 `_PC` 后缀」的复制粘贴；上层只通过 `frame_poll()` 取帧 |
 | `Core/APP/Transport/console.c/.h` | `_write()` printf 重定向到 USART3（强符号覆盖 `syscalls.c` 的 weak 版本，不改 CubeMX 生成文件） |
 | `Core/APP/Core/tick.c/.h` | 1ms tick 分发器（已启用）：`tick_register()` 注册回调，`SysTick_Handler` 只调 `tick_handle()`；中断层不再认识协议层 |
 | `Core/APP/Core/component.c/.h`、`critical.c/.h` | 组件注册表、可重入临界区 —— M3/M4 预留骨架，当前未被调用 |
-| `Core/APP/Modbus/modbus_rtu.c/.h` | 消费者 `uartDataHandler_PC()` / `uartDataHandler_Modbus()`、`checkFrame()` 判决、`sendMessage()`（按地址选出口）、`transmitDataMake()` + `makePacket_*` 功能码分发、`sendException()` 异常响应、四类丢弃计数（判帧已下沉到 `Transport/frame`） |
+| `Core/APP/Modbus/modbus_rtu.c/.h` | 薄壳：消费者 `uartDataHandler_PC()` / `uartDataHandler_Modbus()`、`modbus_init()`、`reply_port()` 地址→出口决策、`send_by_addr()`。M3 之后**不再含**功能码实现、寄存器存储、诊断计数 |
+| `Core/APP/Modbus/modbus_proto.c/.h` | 纯协议层：`Modbus_proto_check()`（长度下限 + CRC）、`mb_proto_build()` 按功能码分发、`mb_proto_build_03()`、`mb_proto_exception()`。**只往缓冲写字节并返回长度，不发送** |
+| `Core/APP/Modbus/register_map.c/.h` | 数据模型层：`REG_COUNT` 与数组长度同源、`reg_read()` / `reg_write()`（越界返回 false 且不写）、`reg_count()`、`reg_meta()` 元数据、线圈接口预留 |
+| `Core/APP/App/diag.c/.h` | 诊断计数层：`diag_id_t` 枚举（SHORT / LONG / CRC / ADDR）+ `diag_inc()` / `diag_get()` / `diag_reset()`，取代 4 个 `extern uint32_t bad_*` 全局变量 |
 | `Core/APP/CRC/CRC16.c/.h` | Modbus CRC16 —— `checkFrame()` 与 `makePacket_*` 都调用，多项式 0xA001 反射、初值 0xFFFF |
 | `Core/APP/DHT11/dht11.c/.h` | DHT11 单总线驱动（非阻塞调度 + 关中断读取），见 `DHT11/DHT11_介绍.md` |
 | `Core/Src/stm32f1xx_it.c` | `SysTick_Handler` 调 `tick_handle()` 统一分发（不再直接认识 Modbus）；`USART1/2_IRQHandler` → `HAL_UART_IRQHandler` |
@@ -124,12 +127,12 @@ PC  ←  01 03 02 01 14 B9 DB       应答：字节数 02 / 数据 0x0114(276)
 
 | 项 | 说明 |
 |---|---|
-| **02 端到端实测未做** | 需上板用 Modbus Poll（从站 2 / 功能码 03 / 起始 0 / 数量 2）验证；01 透传因 `sendMessage` 改动需**回归复测** |
+| **02 端到端实测未做** | 需上板用 Modbus Poll（从站 2 / 功能码 03 / 起始 0 / 数量 2）验证；01 透传因出口决策重构（`sendMessage` → `send_by_addr`）需**回归复测** |
 | 无请求—应答状态机 | 当前 PC 帧到达即转发，不判断总线是否忙、不排队、不限速。`IDLE → SENDING → WAIT_RESP → IDLE` 状态机是高速请求下不丢字节的唯一正解，本分支不处理 |
-| 从机遗留功能码 | `makePacket_01/05/06/15/16` 当前**不调用**（02 只开放 0x03，01 透传不解析），属遗留代码；`transmitDataMake()` + `makePacket_03()` 已被 02 路径使用 |
+| 从机遗留功能码 | `mb_proto_build_01/05/06/15/16` 当前**注释状态**（02 只开放 0x03，01 透传不解析）；`mb_proto_build()` + `mb_proto_build_03()` 已被 02 路径使用 |
+| 路由未独立成层 | 地址 switch 与 `reply_port()` 仍在 `modbus_rtu.c`，M4 计划搬到 `App/router.c`，届时该文件只剩「取帧 + 调 router + 发送」 |
 | 拆包不重组 | Modbus RTU 无长度字段，帧边界靠静默间隔判定。PC 端若把一帧拆成间隔 >5ms 的多段发，会碎成多帧被判 `bad_SHORT`/`bad_CRC`。根治需按功能码「长度字段提前判帧」，本分支不做 |
 | 255 字节边界未实测 | 超长帧 → `bad_LONG` 的路径逻辑已通，但恰好 255 字节的合法长帧未上板验证 |
-| 注释陈旧 | `modbus_rtu.c` 文件头仍写「PB2 控制方向」，实际为 PA1，待改 |
 
 ## 7. 构建
 
@@ -144,6 +147,12 @@ PC  ←  01 03 02 01 14 B9 DB       应答：字节数 02 / 数据 0x0114(276)
 
 > **规范：每次更新推送，都必须说明三段 —— 改了什么 / 加了什么 / 解决了什么。**
 > `git commit` 的 message、推送时的说明、以及此处的每一条记录，都按这个结构写。
+
+### v2.3.0 候选 · 2026-11-19 · `modbus_congji`（重构 M3：协议 / 数据模型 / 诊断三层拆分）
+
+- **改了什么**：`modbus_rtu.c` 由 385 行单文件瘦身为薄壳（只剩「取帧 → 校验 → 路由 → 发送」，`checkFrame()` 折进 `Modbus_proto_check()`，`sendMessage()` 换成 `send_by_addr()`，缓冲类型由 `char` 统一改 `uint8_t`，不再依赖 `-funsigned-char`）；`modbus_rtu.h` 由 76 行降到 37 行，删掉 `ModbusRegister` / `ModbusCoil` / `bad_*` 四个 `extern` 与 `FrameCheckResult` 枚举，只留 `modbus_init()` + 两个消费者；`main.c` 主循环写入由 `ModbusRegister[0]=...` 改为 `reg_write(0, ...)` 并新增 `modbus_init()` 调用；`Transport/frame.c/.h` 注释去掉已删除的 `FRAME_Too_LONG` 枚举名；`.eide/eide.yml` 与 `tools/build.sh` 增加 `Core/APP/App` 头文件路径及 `diag.c` / `modbus_proto.c` / `register_map.c` 三个源文件。
+- **加了什么**：`Core/APP/Modbus/modbus_proto.c/.h` —— 纯协议层，`Modbus_proto_check()` 做长度下限 + CRC（整帧重算为 0 判对），`mb_proto_build()` 按功能码分发，`mb_proto_build_03()` 组读保持寄存器应答，`mb_proto_exception()` 组异常帧，全部「写缓冲 + 返回长度」而不自己发送；`Core/APP/Modbus/register_map.c/.h` —— 数据模型层，`REG_COUNT` 与数组长度同源，`reg_read()` / `reg_write()`（越界返回 false 且不写）、`reg_count()`、`reg_meta()` 名称/单位/倍率元数据，线圈接口预留；`Core/APP/App/diag.c/.h` —— 诊断计数层，`diag_id_t` 枚举 + `diag_inc()` / `diag_get()` / `diag_reset()`，新增丢弃原因只需加枚举项与名字表。
+- **解决了什么**：**B1** —— `(uint16_t)DHT11_GetTemp(&dht) * 10.0f` 是「先截断再乘」，25.6℃ 记成 250（现改为先乘、`+0.5f` 四舍五入、再取整）；**B5** —— 头文件写 `NUMBER_OF_REGISTER=10` 而实际数组只有 2 个元素，启用 0x06/0x10 时会越界检查通过再写坏相邻内存（现数组长度与 `REG_COUNT` 同源，不可能对不上）；**B6** —— 应用层直接写 `ModbusRegister[]` 越过协议层且无越界保护（现所有读写路径强制经过 `reg_write()`，越界拦截只此一处）；协议层与显示层通过 `extern uint32_t bad_*` 互相耦合、每加一类丢弃原因就要加一个全局变量的问题；`makePacket_*` 组完包直接发送、出口规则焊死在协议层、导致 M4 的 router 层没有插入点的问题（现协议层只产字节，出口决策留在 `modbus_rtu.c`，M4 只需改这一处 switch）。**已验证**：`bash tools/build.sh` 编译通过，产物 `build/makecheck/Modbus_RS485_PC.elf`；**未验证**：上板回归（01 透传 + 02 读寄存器）尚未做。
 
 ### v2.2.0 候选 · 2026-11-14 · `modbus_congji`（重构 M0–M2 + OLED 硬件 I2C）
 

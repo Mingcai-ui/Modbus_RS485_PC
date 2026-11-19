@@ -94,7 +94,7 @@ void frame_on_byte(frame_ch_t ch, uint8_t byte)
      * 把帧"头"冲成尾部数据 —— 结果是一个超长帧被伪装成
      * "头部合法、长度正常"的帧，甚至可能碰巧通过 CRC。
      * 所以宁可冻结计数、丢弃尾部，只留一个 overflow 标记，
-     * 让上层明确判为 FRAME_Too_LONG 并计数。 */
+     * 让上层明确判为超长并计数。 */
     if (c->rx_count < FRAME_BUF_SIZE)
     {
         c->rx_buf[c->rx_count++] = byte;

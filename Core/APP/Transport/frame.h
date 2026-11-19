@@ -53,7 +53,7 @@ void frame_tick(void);
  *   out   : 调用者提供的缓冲，长度至少 FRAME_BUF_SIZE
  *   溢出  : *overflowed 由本函数写出（取走即清零）；传 NULL 表示不关心。
  *           为 1 时表示该帧在接收期间曾超出缓冲，尾部字节已丢，
- *           上层应判为 FRAME_Too_LONG 而不是拿去校验 CRC。
+ *           上层应自行判为超长并计数，而不是拿去校验 CRC。
  * 注意：返回值是"本次拷出的字节数"，与 Modbus 帧头里声明的长度无关。 */
 uint8_t frame_poll(frame_ch_t ch, uint8_t *out, uint8_t *overflowed);
 

@@ -20,6 +20,7 @@ cd "$ROOT"
 
 INCS=(
   -ICore/Inc
+  -ICore/APP/App
   -ICore/APP/Core
   -IDrivers/STM32F1xx_HAL_Driver/Inc
   -IDrivers/STM32F1xx_HAL_Driver/Inc/Legacy
@@ -40,6 +41,7 @@ CFLAGS=(
 )
 
 SRCS=(
+  Core/APP/App/diag.c
   Core/APP/Core/component.c
   Core/APP/Core/tick.c
   Core/APP/Core/critical.c
@@ -47,6 +49,8 @@ SRCS=(
   Core/APP/DHT11/dht11.c
   Core/APP/MPU6050/mpu6050.c
   Core/APP/Modbus/Mb_port.c
+  Core/APP/Modbus/modbus_proto.c
+  Core/APP/Modbus/register_map.c
   Core/APP/Modbus/modbus_rtu.c
   Core/APP/Transport/frame.c
   Core/APP/Transport/console.c

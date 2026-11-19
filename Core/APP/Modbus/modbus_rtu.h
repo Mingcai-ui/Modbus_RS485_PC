@@ -1,76 +1,37 @@
 #ifndef __MODBUS_RTU_H__
 #define __MODBUS_RTU_H__
 
-#include <stdbool.h>
 #include <stdint.h>
-#include <string.h>
 
-/* ================== 宏定义 ================== */
-#define SLAVEID             1       /* 从机地址 */
-#define NUMBER_OF_REGISTER  10      /* 保持寄存器总数 (0x03/0x06/0x10) */
-#define NUMBER_OF_COIL      30      /* 线圈总数     (0x01/0x05/0x0F) */
-#define SLAVE02_REG_COUNT   2       /* 02 从机对外暴露的寄存器数（协议维度） */
-/* 缓冲区长度 = Modbus 单帧合法上限 255 字节
- * （0x10 写满 123 个寄存器：1+1+2+2+1+246+2 = 255）。
- * 计数器是 uint8_t，255 刚好卡在上限，**不可改成 256** ——
- * 否则 DataCounter 会回绕成 0，整帧被当空帧丢弃。 */
-#define BUFFERSIZE          255
+/*
+ * modbus_rtu.h —— Modbus 路由与收发出口（薄壳层）
+ *
+ * 【本层职责】
+ *   只做三件事：
+ *     1) 从 frame 层取整帧；
+ *     2) 按从站地址路由（0x01 透传 / 0x02 本机应答 / 其它丢弃）；
+ *     3) 按地址选出口发送。
+ *
+ * 【本层不再包含】（M3 拆走了）
+ *   - 功能码实现   → modbus_proto.c
+ *   - 寄存器存储   → register_map.c
+ *   - 诊断计数     → App/diag.c
+ *   - 帧校验细节   → modbus_proto.c（Modbus_proto_check）
+ *   - 缓冲与判帧   → Transport/frame.c（M2 已拆）
+ *
+ * 【M4 预留】下一步会把路由部分（下面 uartDataHandler_PC 里的 switch）
+ *   搬到 App/router.c，届时本文件只剩"取帧 + 调 router + 发送"。
+ */
 
-/* Modbus 异常码 */
-#define EX_ILLEGAL_FUNCTION 0x01    /* 从机不支持该功能码 */
-#define EX_ILLEGAL_ADDRESS  0x02    /* 数据地址越界 */
-#define EX_ILLEGAL_VALUE    0x03    /* 数据值非法 */
+/* 初始化：清空寄存器表、清零诊断计数。
+ * 必须在 main 的初始化阶段、进入 while(1) 之前调用一次。 */
+void modbus_init(void);
 
-/* ================== 全局数据区 (定义在 modbus_rtu.c) ================== */
-extern uint16_t ModbusRegister[2];
-extern bool     ModbusCoil[NUMBER_OF_COIL];
-
-/* ================== 功能码枚举 ================== */
-enum
-{
-    ReadCoil              = 0x01,
-    ReadHoldingRegister   = 0x03,
-    WriteSingleCoil       = 0x05,
-    WriteSingleRegister   = 0x06,
-    WriteMultipleCoils    = 0x0F,
-    WriteMultipleRegisters = 0x10,
-};
-
-typedef enum{
-    FRAME_OK = 0,
-    FRAME_Too_SHORT,    // 帧太短
-    FRAME_Too_LONG,     // 帧太长（由中断的 overflow 标记折算而来）
-    FRAME_CRC_ERR,      //CRC错误
-}FrameCheckResult;
-
-/* 丢弃计数：四类原因含义不同，分开记才有诊断价值。
- * 只在主循环上下文读写、不进中断、不跨线程，所以不需要 volatile。
- * 不加 static，是为了以后 OLED / 调试页能直接读这几个数。 */
-extern uint32_t bad_SHORT;    /* 帧长 < 4：判帧阈值或链路问题 */
-extern uint32_t bad_LONG;     /* 超出 BUFFERSIZE，尾部字节已被丢弃 */
-extern uint32_t bad_CRC;      /* CRC 错：帧内容坏了 */
-extern uint32_t bad_Addrs;    /* 地址既非 0x01（RS485 变送器）也非 0x02（本机 DHT11） */
-
-/* ================== 接收与处理 ================== */
-void uartDataHandler(void);                          /* main 的 while(1) 里轮询调用 */
-
-
-
+/* PC 侧（USART1）消费者：主循环轮询调用，取帧 → 校验 → 路由 → 应答 */
 void uartDataHandler_PC(void);
+
+/* RS485 侧（USART2）消费者：取帧后原样回显给 PC
+ * （帧来自总线上的外部变送器，本机不改内容、不做校验） */
 void uartDataHandler_Modbus(void);
-void transmitDataMake(char *msg, uint8_t Lenght, const uint16_t *regs, uint16_t regCount);
-
-/* ================== 具体功能码 ================== */
-// void makePacket_01(char *msg, uint8_t Lenght);
-void makePacket_03(char *msg, uint8_t Lenght , const uint16_t *regs, uint16_t regCount);
-// void makePacket_05(char *msg, uint8_t Lenght);
-// void makePacket_06(char *msg, uint8_t Lenght);
-// void makePacket_15(char *msg, uint8_t Lenght);
-// void makePacket_16(char *msg, uint8_t Lenght);
-
-/* ================== 工具函数 ================== */
-void     sendMessage(char *msg, uint8_t len);
-void     sendException(char *msg, uint8_t code);
-uint8_t  findByte(int16_t NumberOfCoil);
 
 #endif /* __MODBUS_RTU_H__ */

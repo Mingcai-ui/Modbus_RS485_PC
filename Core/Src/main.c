@@ -35,6 +35,8 @@
 #include "Mb_port.h"
 #include "mpu6050.h"
 #include "tick.h"
+#include "register_map.h"
+#include "diag.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -105,6 +107,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   mb_port_init();
+  modbus_init();      /* 寄存器表 / 诊断计数清零（原 ModbusRegister 由本层接管） */
 
   /* Modbus 判帧定时：注册为 1ms tick 回调 */
   tick_register(frame_tick);
@@ -135,17 +138,17 @@ int main(void)
 
     if (st == DHT11_OK)
     {
-      ModbusRegister[0]= (uint16_t)DHT11_GetTemp(&dht) * 10.0f;
-      ModbusRegister[1]= (uint16_t)DHT11_GetHumi(&dht) * 10.0f;
+      /* B1 修复：原写法 (uint16_t)x * 10.0f 是"先截断再乘"——
+       * 25.6 先变 25，再乘 10 得 250（正确值应为 256）。
+       * 必须先乘、加 0.5 四舍五入、最后取整。 */
+      (void)reg_write(0, (uint16_t)(DHT11_GetTemp(&dht) * 10.0f + 0.5f));
+      (void)reg_write(1, (uint16_t)(DHT11_GetHumi(&dht) * 10.0f + 0.5f));
     }
-
-    // OLED_ShowNum(60, 0, bad_SHORT, 2, OLED_6X8);    //显示短错误次数
-    // OLED_ShowNum(60, 8, bad_LONG, 2, OLED_6X8);     //显示长错误次数
-    // OLED_ShowNum(60, 16, bad_CRC, 2, OLED_6X8);     //显示CRC错误次数
-    // OLED_ShowNum(60, 24, bad_Addrs, 2, OLED_6X8);   //显示地址错误次数
-
-    // OLED_ShowNum(0, 32, ModbusRegister[0], 4,OLED_6X8);
-    // OLED_ShowNum(0, 40, ModbusRegister[1], 4,OLED_6X8);
+    /*OLED显示会影响串口的接发送*/
+    // OLED_ShowNum(60, 0, diag_get(DIAG_FRAME_SHORT), 2, OLED_6X8);   //显示短错误次数
+    // OLED_ShowNum(60, 8, diag_get(DIAG_FRAME_LONG), 2, OLED_6X8);    //显示长错误次数
+    // OLED_ShowNum(60, 16, diag_get(DIAG_CRC_ERR), 2, OLED_6X8);      //显示CRC错误次数
+    // OLED_ShowNum(60, 24, diag_get(DIAG_BAD_ADDR), 2, OLED_6X8);     //显示地址错误次数
     // OLED_Update();
   }
 
