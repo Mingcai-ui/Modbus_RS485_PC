@@ -8,7 +8,8 @@
 > - 其他地址 → 静默丢弃并计数
 >
 > STM32F103C8T6 + HAL，裸机 `while(1)`，无 RTOS。**当前版本 v1.0.0（main，纯透传桥）；
-> 本分支 `feat/modbus-router` 为 v2.0.0 候选**，新增路由与 02 从机，待上板实测后合并 main 并打 tag。
+> 本分支 `modbus_congji` 为 v2.3.0 候选**（M0–M3 重构：分层 + 路由 + 02 从机），
+> M3 上板回归已通过（2026-11-19，见 §5.4），主站轮询状态机上板后合并 main 并打 tag。
 
 ---
 
@@ -100,16 +101,17 @@ PC  →  01 03 00 01 00 01 D5 CA     请求：读变送器保持寄存器 1 个
 PC  ←  01 03 02 01 14 B9 DB       应答：字节数 02 / 数据 0x0114(276)
 ```
 
-### 5.2 地址 02 本机 DHT11（待上板实测）
+### 5.2 地址 02 本机 DHT11（部分实测）
 
 | 请求帧 | 应答帧 | 含义 |
 |---|---|---|
 | `02 03 00 00 00 02 C4 38` | `02 03 04 01 13 02 4E B8 5E` | 温度 0x0113=275 → 27.5℃；湿度 0x024E=590 → 59.0%RH |
-| `02 03 00 09 00 04 <CRC>` | `02 83 02 30 F1` | 起始 9 + 4 > 10，越界 → 异常 0x02 |
-| `02 06 00 00 00 64 <CRC>` | `02 86 01 <CRC>` | 02 只读，写请求 → 异常 0x01 |
+| `02 03 00 09 00 04 <CRC>` | `02 83 02 30 F1` | 起始 9 + 4 > 2（`REG_COUNT`），越界 → 异常 0x02 |
+| `02 06 00 00 00 64 <CRC>` | `02 86 01 <CRC>` | 02 只读，写请求 → 异常 0x01（**11-19 实测通过**） |
 
 > 寄存器布局：`0`=温度×10 的 int16 补码，`1`=湿度×10 的 uint16。温湿度变送器行业通用布局，
 > 换 DHT22 / SHT30 也不用改 PC 端。零下温度注意 PC 端要用**有符号**显示，否则 −52 会显示成 65484。
+> 02 数据读取现状：11-14 上板恒 0（采样失败），11-16 重新上电读到非零真实值但代码未改、病因未定，冷启动 ×3 复核待做。
 
 ### 5.3 连续收发速率边界（2026-11-08 实测）
 
@@ -123,20 +125,36 @@ PC  ←  01 03 02 01 14 B9 DB       应答：字节数 02 / 数据 0x0114(276)
 **成因**：一次事务往返约 62ms（变送器处理 ≈50ms + 9600 下 9 字节应答 9.4ms）。PC 以 16ms 节奏灌入时，
 桥收到新帧立即 `rs485Mode(1)` 转发，收发器在发送期间关闭接收，变送器尚未发完的应答字节被物理丢弃。
 
+### 5.4 M3 拆分后回归（2026-11-19 实测）
+
+| 条件 | 结果 |
+|---|---|
+| OLED 显示注释关闭，PC 间隔 1ms × 100 次 | **零丢包**，应答帧接收正常 |
+| 四路坏帧（短 / 长 / CRC / 地址） | 全部拦截并计数显示 |
+| 非法功能码 | 返回异常应答，PC 终端可见提示 |
+| OLED 开启（每循环全量刷新） | PC 间隔需 **≥ 100ms** 才零丢包（与 93ms 刷新耗时吻合） |
+
+> 注意：「1ms 间隔」受 PC 侧 USB-串口 Latency Timer（默认 16ms）整形，线上实际是批量突发；
+> 本表证明功能正确，**不代表 `FRAME_GAP_MS=5` 的 ~175 帧/秒吞吐上限已验证**。
+
 ## 6. 已知限制与待办
 
 | 项 | 说明 |
 |---|---|
-| **02 端到端实测未做** | 需上板用 Modbus Poll（从站 2 / 功能码 03 / 起始 0 / 数量 2）验证；01 透传因出口决策重构（`sendMessage` → `send_by_addr`）需**回归复测** |
-| 无请求—应答状态机 | 当前 PC 帧到达即转发，不判断总线是否忙、不排队、不限速。`IDLE → SENDING → WAIT_RESP → IDLE` 状态机是高速请求下不丢字节的唯一正解，本分支不处理 |
+| **02 冷启动病因未定** | 11-14 恒 0 / 11-16 重上电读到真实值，代码未改；冷启动 ×3 复核待做，失败开 `DHT11_DEBUG_TIMES` 看 `DbgFailStage`。M3 功能回归已通过（§5.4） |
+| **DHT11 采样门控丢失** | M2 拆 frame 层时丢了「两条总线静默才采样」门控，现无条件采样；每 2s 一次 4~5ms 关中断撞上 PC 帧会 ORE 偶发丢帧，待恢复 |
+| **OLED 阻塞刷新** | 诊断显示已接 `diag_get`，但全量 `OLED_Update` ≈93ms @ I2C 100kHz；开启时 PC 间隔需 ≥100ms。根治需 `UpdateArea` 局部刷新 + I2C 400kHz（单次 <16ms）；高频测试先注释 while 内 OLED 块 |
+| 无请求—应答状态机 | 当前 PC 帧到达即转发，不判断总线是否忙、不排队、不限速。主站轮询状态机已编译通过、**未上板**（P0 的另一半） |
 | 从机遗留功能码 | `mb_proto_build_01/05/06/15/16` 当前**注释状态**（02 只开放 0x03，01 透传不解析）；`mb_proto_build()` + `mb_proto_build_03()` 已被 02 路径使用 |
 | 路由未独立成层 | 地址 switch 与 `reply_port()` 仍在 `modbus_rtu.c`，M4 计划搬到 `App/router.c`，届时该文件只剩「取帧 + 调 router + 发送」 |
-| 拆包不重组 | Modbus RTU 无长度字段，帧边界靠静默间隔判定。PC 端若把一帧拆成间隔 >5ms 的多段发，会碎成多帧被判 `bad_SHORT`/`bad_CRC`。根治需按功能码「长度字段提前判帧」，本分支不做 |
-| 255 字节边界未实测 | 超长帧 → `bad_LONG` 的路径逻辑已通，但恰好 255 字节的合法长帧未上板验证 |
+| 拆包不重组 | Modbus RTU 无长度字段，帧边界靠静默间隔判定。PC 端若把一帧拆成间隔 >5ms 的多段发，会碎成多帧被判短帧/CRC 错。根治需按功能码「长度字段提前判帧」，本分支不做 |
+| 255 字节边界未实测 | 超长帧 → 计数的路径逻辑已通，但恰好 255 字节的合法长帧未上板验证 |
+| 真实帧率上限未验证 | `FRAME_GAP_MS=5` 的 ~175~200 帧/秒上限从未真验证（PC 侧 USB Latency 16ms 掩盖，见 §5.4 注） |
+| `DHT11_LOG_ENABLE` 死宏 | 无任何 `#if` 引用，改它不会打印 |
 
 ## 7. 构建
 
-- **EIDE**（本项目实际使用）：打开 `Modbus_RS485_PC.code-workspace`，`.eide/eide.yml` 已配好头文件路径（`Core/APP/{Core,Transport,Modbus,CRC,DHT11,OLED,MPU6050}`），arm-none-eabi-gcc 编译，产物在 `build/`（已忽略）。
+- **EIDE**（本项目实际使用）：打开 `Modbus_RS485_PC.code-workspace`，`.eide/eide.yml` 已配好头文件路径（`Core/APP/{App,Core,Transport,Modbus,CRC,DHT11,OLED,MPU6050}`），arm-none-eabi-gcc 编译，产物在 `build/`（已忽略）。
 - **命令行验证**：`bash tools/build.sh`，用 EIDE 自带的 GCC 输出到 `build/makecheck/`，不干扰 EIDE 的 `build/Debug`，适合每步改动后快速确认能编译。
 - **STM32CubeIDE**：可直接导入 `.project` / `.cproject`。修改引脚后重新生成代码时，注意 `stm32f1xx_it.c` 的 `USER CODE` 区与 NVIC 勾选不要被覆盖。
 - 仓库已忽略 `/build`、`/bin`、`/obj`、`/out`、`/.settings` 等产物。
@@ -152,7 +170,7 @@ PC  ←  01 03 02 01 14 B9 DB       应答：字节数 02 / 数据 0x0114(276)
 
 - **改了什么**：`modbus_rtu.c` 由 385 行单文件瘦身为薄壳（只剩「取帧 → 校验 → 路由 → 发送」，`checkFrame()` 折进 `Modbus_proto_check()`，`sendMessage()` 换成 `send_by_addr()`，缓冲类型由 `char` 统一改 `uint8_t`，不再依赖 `-funsigned-char`）；`modbus_rtu.h` 由 76 行降到 37 行，删掉 `ModbusRegister` / `ModbusCoil` / `bad_*` 四个 `extern` 与 `FrameCheckResult` 枚举，只留 `modbus_init()` + 两个消费者；`main.c` 主循环写入由 `ModbusRegister[0]=...` 改为 `reg_write(0, ...)` 并新增 `modbus_init()` 调用；`Transport/frame.c/.h` 注释去掉已删除的 `FRAME_Too_LONG` 枚举名；`.eide/eide.yml` 与 `tools/build.sh` 增加 `Core/APP/App` 头文件路径及 `diag.c` / `modbus_proto.c` / `register_map.c` 三个源文件。
 - **加了什么**：`Core/APP/Modbus/modbus_proto.c/.h` —— 纯协议层，`Modbus_proto_check()` 做长度下限 + CRC（整帧重算为 0 判对），`mb_proto_build()` 按功能码分发，`mb_proto_build_03()` 组读保持寄存器应答，`mb_proto_exception()` 组异常帧，全部「写缓冲 + 返回长度」而不自己发送；`Core/APP/Modbus/register_map.c/.h` —— 数据模型层，`REG_COUNT` 与数组长度同源，`reg_read()` / `reg_write()`（越界返回 false 且不写）、`reg_count()`、`reg_meta()` 名称/单位/倍率元数据，线圈接口预留；`Core/APP/App/diag.c/.h` —— 诊断计数层，`diag_id_t` 枚举 + `diag_inc()` / `diag_get()` / `diag_reset()`，新增丢弃原因只需加枚举项与名字表。
-- **解决了什么**：**B1** —— `(uint16_t)DHT11_GetTemp(&dht) * 10.0f` 是「先截断再乘」，25.6℃ 记成 250（现改为先乘、`+0.5f` 四舍五入、再取整）；**B5** —— 头文件写 `NUMBER_OF_REGISTER=10` 而实际数组只有 2 个元素，启用 0x06/0x10 时会越界检查通过再写坏相邻内存（现数组长度与 `REG_COUNT` 同源，不可能对不上）；**B6** —— 应用层直接写 `ModbusRegister[]` 越过协议层且无越界保护（现所有读写路径强制经过 `reg_write()`，越界拦截只此一处）；协议层与显示层通过 `extern uint32_t bad_*` 互相耦合、每加一类丢弃原因就要加一个全局变量的问题；`makePacket_*` 组完包直接发送、出口规则焊死在协议层、导致 M4 的 router 层没有插入点的问题（现协议层只产字节，出口决策留在 `modbus_rtu.c`，M4 只需改这一处 switch）。**已验证**：`bash tools/build.sh` 编译通过，产物 `build/makecheck/Modbus_RS485_PC.elf`；**未验证**：上板回归（01 透传 + 02 读寄存器）尚未做。
+- **解决了什么**：**B1** —— `(uint16_t)DHT11_GetTemp(&dht) * 10.0f` 是「先截断再乘」，25.6℃ 记成 250（现改为先乘、`+0.5f` 四舍五入、再取整）；**B5** —— 头文件写 `NUMBER_OF_REGISTER=10` 而实际数组只有 2 个元素，启用 0x06/0x10 时会越界检查通过再写坏相邻内存（现数组长度与 `REG_COUNT` 同源，不可能对不上）；**B6** —— 应用层直接写 `ModbusRegister[]` 越过协议层且无越界保护（现所有读写路径强制经过 `reg_write()`，越界拦截只此一处）；协议层与显示层通过 `extern uint32_t bad_*` 互相耦合、每加一类丢弃原因就要加一个全局变量的问题；`makePacket_*` 组完包直接发送、出口规则焊死在协议层、导致 M4 的 router 层没有插入点的问题（现协议层只产字节，出口决策留在 `modbus_rtu.c`，M4 只需改这一处 switch）。**已验证**：`bash tools/build.sh` 编译通过，产物 `build/makecheck/Modbus_RS485_PC.elf`；**上板回归（2026-11-19）通过**：OLED 关闭时 1ms × 100 零丢包、四路坏帧拦截、非法功能码异常应答均正常，OLED 开启时安全发送间隔 ≥100ms（详见 §5.4）。
 
 ### v2.2.0 候选 · 2026-11-14 · `modbus_congji`（重构 M0–M2 + OLED 硬件 I2C）
 
