@@ -34,9 +34,9 @@
 /* 为什么要"拷出来"：frame_poll 会把 frame 层的缓冲清零并复用，
  * 而发送是阻塞的、耗时较长，这段时间里新帧可能已经开始写入。
  * 所以取帧时直接拷到本模块自己的缓冲，发送期间不受中断影响。 */
-static uint8_t rx_pc[FRAME_BUF_SIZE];       //PC端数据缓存区
-static uint8_t rx_rs485[FRAME_BUF_SIZE];    //RS485数据缓存区
-static uint8_t tx_buf[FRAME_BUF_SIZE];      //应答帧数据组包区
+static uint8_t s_pc_frame[FRAME_BUF_SIZE];       //PC端数据缓存区
+static uint8_t s_rs485_frame[FRAME_BUF_SIZE];    //RS485数据缓存区
+static uint8_t s_response_frame[FRAME_BUF_SIZE];      //应答帧数据组包区
 
 /* ================== 出口决策 ================== */
 
@@ -47,7 +47,7 @@ static uint8_t tx_buf[FRAME_BUF_SIZE];      //应答帧数据组包区
  * 注意这条规则只对"应答方向"成立。主站发送时发给 01/02 的请求
  * 都走同一条 485，地址不参与出口决策 —— 主站自己指定端口。
  *
- * TODO(M4): 本函数与 uartDataHandler_PC 里的地址 switch 一起搬到 App/router.c。 */
+ * TODO(M4): 本函数与 modbus_poll_pc_frames 里的地址 switch 一起搬到 App/router.c。 */
 static mb_port_t reply_port(uint8_t addr)
 {
     return (addr == SLAVE_ADDR_REMOTE) ? MB_PORT_RS485 : MB_PORT_PC;
@@ -68,13 +68,13 @@ void modbus_init(void)
 
 /* ================== PC 侧消费者 ================== */
 
-void uartDataHandler_PC(void)
+void modbus_poll_pc_frames(void)
 {
     uint8_t overflowed = 0;
     uint8_t len;
     uint8_t resp_len;
 
-    len = frame_poll(FRAME_CH_PC, rx_pc, &overflowed);      //取PC端数据   pc端数据缓存区  超长标志存储地址
+    len = frame_poll(FRAME_CH_PC, s_pc_frame, &overflowed);      //取PC端数据   pc端数据缓存区  超长标志存储地址
 
     if (len == 0)
     {
@@ -89,7 +89,7 @@ void uartDataHandler_PC(void)
         return;
     }
 
-    switch (Modbus_proto_check(rx_pc, len))     //帧校验,三个返回值
+    switch (mb_proto_check(s_pc_frame, len))     //帧校验,三个返回值
     {
     case MB_FRAME_OK:               //帧完整
         break;
@@ -107,23 +107,23 @@ void uartDataHandler_PC(void)
     }
 
     /* ---- 地址路由 ---- */
-    switch (rx_pc[0])
+    switch (s_pc_frame[0])
     {
     case SLAVE_ADDR_REMOTE:
         /* 透传：不改内容、不做功能码处理，由变送器自己应答。
-         * 它的应答经 USART2 回来，由 uartDataHandler_Modbus 回显给 PC。 */
-        send_by_addr(SLAVE_ADDR_REMOTE, rx_pc, len);
+         * 它的应答经 USART2 回来，由 modbus_poll_rs485_frames 回显给 PC。 */
+        send_by_addr(SLAVE_ADDR_REMOTE, s_pc_frame, len);
         break;
 
     case SLAVE_ADDR_LOCAL:
         /* 本机应答：协议层组包（不发送），这里决定往哪发。
          * 不支持的功能码、长度不足、地址越界，都由 mb_proto_build
          * 内部转成异常帧返回，不需要在这里再判一次。 */
-        resp_len = mb_proto_build(rx_pc, len, tx_buf, (uint8_t)sizeof(tx_buf));
+        resp_len = mb_proto_build(s_pc_frame, len, s_response_frame, (uint8_t)sizeof(s_response_frame));
 
         if (resp_len > 0)
         {
-            send_by_addr(SLAVE_ADDR_LOCAL, tx_buf, resp_len);
+            send_by_addr(SLAVE_ADDR_LOCAL, s_response_frame, resp_len);
         }
         break;
 
@@ -136,9 +136,9 @@ void uartDataHandler_PC(void)
 
 /* ================== RS485 侧消费者 ================== */
 
-void uartDataHandler_Modbus(void)
+void modbus_poll_rs485_frames(void)
 {
-    uint8_t len = frame_poll(FRAME_CH_RS485, rx_rs485, NULL);
+    uint8_t len = frame_poll(FRAME_CH_RS485, s_rs485_frame, NULL);
 
     if (len == 0)
     {
@@ -147,5 +147,5 @@ void uartDataHandler_Modbus(void)
 
     /* 原样回显给 PC。出口固定是 PC，不走 reply_port ——
      * 因为这是"把总线上的应答转给上位机"，不是"本机应答"。 */
-    (void)mb_port_send(MB_PORT_PC, rx_rs485, len);
+    (void)mb_port_send(MB_PORT_PC, s_rs485_frame, len);
 }

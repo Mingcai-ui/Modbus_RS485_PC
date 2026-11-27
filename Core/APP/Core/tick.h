@@ -31,7 +31,7 @@
  */
 typedef void (*tick_cb_t)(void);    //定义一个无返回值的无传参的函数指针
 
-void tick_register(tick_cb_t cb);
+void tick_register(tick_cb_t cb);   //注册一个 1ms 回调
 void tick_handle(void);   /* 由 SysTick_Handler 调用 */
 
 #endif /* __TICK_H__ */

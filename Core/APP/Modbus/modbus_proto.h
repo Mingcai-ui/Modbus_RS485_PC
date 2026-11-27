@@ -57,7 +57,7 @@ typedef enum
 /* 帧校验：长度下限 + CRC。
  * CRC 的判定方式是"对整个帧（含末尾 2 字节 CRC）再算一遍，结果为 0 即正确"，
  * 这是 Modbus CRC 的数学性质，不是笔误。 */
-mb_frame_check_t Modbus_proto_check(const uint8_t *frame, uint8_t len);
+mb_frame_check_t mb_proto_check(const uint8_t *frame, uint8_t len);
 
 /* 组应答帧（统一入口）。
  *   req      : 请求帧（只读）

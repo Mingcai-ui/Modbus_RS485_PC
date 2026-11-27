@@ -16,16 +16,16 @@
 
 /* ================== 帧校验 ================== */
 
-mb_frame_check_t Modbus_proto_check(const uint8_t *frame, uint8_t len)
+mb_frame_check_t mb_proto_check(const uint8_t *frame, uint8_t len)
 {
     if (len < MB_MIN_FRAME_LEN)
     {
         return MB_FRAME_TOO_SHORT;  //帧太短
     }
 
-    /* MODBUS_CRC16 的返回值语义：对"含 CRC 的完整帧"再算一遍，
+    /* modbus_crc16 的返回值语义：对"含 CRC 的完整帧"再算一遍，
      * 结果为 0 表示正确，非 0 表示帧被破坏。 */
-    if (MODBUS_CRC16((const char *)frame, len) != 0)
+    if (modbus_crc16((const char *)frame, len) != 0)
     {
         return MB_FRAME_CRC_ERR;  //CRC校验错误
     }
@@ -49,7 +49,7 @@ uint8_t mb_proto_exception(const uint8_t *req, uint8_t code, uint8_t *out, uint8
     out[1] = (uint8_t)(req[1] | 0x80);
     out[2] = code;
 
-    crc = MODBUS_CRC16((const char *)out, 3);
+    crc = modbus_crc16((const char *)out, 3);
     out[3] = (uint8_t)(crc & 0x00FF);     /* CRC 低字节在前 */
     out[4] = (uint8_t)(crc >> 8);
 
@@ -105,7 +105,7 @@ uint8_t mb_proto_build_03(const uint8_t *req, uint8_t len, uint8_t *out, uint8_t
         out[4 + i * 2] = (uint8_t)(value & 0x00FF);
     }
 
-    crc = MODBUS_CRC16((const char *)out, (uint8_t)(3 + reg_num * 2));
+    crc = modbus_crc16((const char *)out, (uint8_t)(3 + reg_num * 2));
     out[3 + reg_num * 2] = (uint8_t)(crc & 0x00FF);
     out[4 + reg_num * 2] = (uint8_t)(crc >> 8);
 
@@ -120,7 +120,7 @@ uint8_t mb_proto_build(const uint8_t *req, uint8_t len, uint8_t *out, uint8_t ou
      * （地址 + 功能码 + 起始地址2 + 数量2 + CRC2）。
      * 下面的 build_03 要读 req[2]~req[5]，长度不够会读到上一条帧的残留字节，
      * 组出一个地址/数量全是垃圾的应答。所以统一在这里挡掉。
-     * 此时 req[0]/req[1] 必然有效（Modbus_proto_check 已保证至少 4 字节）。 */
+     * 此时 req[0]/req[1] 必然有效（mb_proto_check 已保证至少 4 字节）。 */
     if (len < 8)
     {
         return mb_proto_exception(req, MB_EX_ILLEGAL_VALUE, out, out_cap);

@@ -10,16 +10,16 @@
 /* ================== 存储区 ================== */
 
 /* 保持寄存器。地址 0 = 温度×10，地址 1 = 湿度×10（见下方元数据表）。 */
-static uint16_t reg_value[REG_COUNT];
+static uint16_t s_reg_values[REG_COUNT];
 
 /* 线圈表。功能码未启用，保留存储以便恢复 0x01/0x05/0x0F 时不改结构。 */
-static bool coil_value[COIL_COUNT];
+static bool s_coil_values[COIL_COUNT];
 
 /* ================== 元数据表 ================== */
 
-/* 下标必须与 reg_value[] 的地址一一对应。
+/* 下标必须与 s_reg_values[] 的地址一一对应。
  * 这是"轻量表驱动"：协议层只认地址，显示层靠这张表知道每个地址是什么。 */
-static const reg_meta_t reg_meta_table[REG_COUNT] =
+static const reg_meta_t s_reg_meta_table[REG_COUNT] =
 {
     /* 地址 0 */ { "温度", "℃",   10 },
     /* 地址 1 */ { "湿度", "%RH", 10 },
@@ -36,12 +36,12 @@ void reg_init(void)
 
     for (i = 0; i < REG_COUNT; i++)
     {
-        reg_value[i] = 0;
+        s_reg_values[i] = 0;
     }
 
     for (i = 0; i < COIL_COUNT; i++)
     {
-        coil_value[i] = false;
+        s_coil_values[i] = false;
     }
 }
 
@@ -52,7 +52,7 @@ uint16_t reg_read(uint16_t addr)    //返回指定寄存器信息
         return 0;
     }
 
-    return reg_value[addr];
+    return s_reg_values[addr];
 }
 
 bool reg_write(uint16_t addr, uint16_t value)
@@ -65,7 +65,7 @@ bool reg_write(uint16_t addr, uint16_t value)
         return false;
     }
 
-    reg_value[addr] = value;
+    s_reg_values[addr] = value;
     return true;
 }
 
@@ -81,7 +81,7 @@ const reg_meta_t *reg_meta(uint16_t addr)       //返回显示内容,放大倍�
         return NULL;
     }
 
-    return &reg_meta_table[addr];
+    return &s_reg_meta_table[addr];
 }
 
 /* ================== 线圈（预留） ================== */
@@ -93,7 +93,7 @@ bool coil_read(uint16_t addr)
         return false;
     }
 
-    return coil_value[addr];
+    return s_coil_values[addr];
 }
 
 bool coil_write(uint16_t addr, bool value)
@@ -103,7 +103,7 @@ bool coil_write(uint16_t addr, bool value)
         return false;
     }
 
-    coil_value[addr] = value;
+    s_coil_values[addr] = value;
     return true;
 }
 

@@ -21,17 +21,17 @@
  * 新增组件后若发现不执行，先查这里。 */
 #define COMPONENT_MAX 16
 
-static const component_t *comp_list[COMPONENT_MAX];
-static uint8_t comp_count = 0;
+static const component_t *s_component_table[COMPONENT_MAX];
+static uint8_t s_component_count = 0;
 
 /* 注册一个组件。只需在初始化阶段调用，运行中增删不安全。
  * 存的是指针，所以 component_t 本身必须是 static/全局生命周期，
  * 不能是栈上的局部变量。 */
-void component_register(const component_t *c)
+void component_register(const component_t *component)
 {
-    if (c != NULL && comp_count < COMPONENT_MAX)
+    if (component != NULL && s_component_count < COMPONENT_MAX)
     {
-        comp_list[comp_count++] = c;
+        s_component_table[s_component_count++] = component;
     }
 }
 
@@ -41,11 +41,11 @@ void component_register(const component_t *c)
 void component_init_all(void)
 {
     uint8_t i;
-    for (i = 0; i < comp_count; i++)
+    for (i = 0; i < s_component_count; i++)
     {
-        if (comp_list[i]->init != NULL)
+        if (s_component_table[i]->init != NULL)
         {
-            comp_list[i]->init();
+            s_component_table[i]->init();
         }
     }
 }
@@ -56,11 +56,11 @@ void component_init_all(void)
 void component_loop_all(void)
 {
     uint8_t i;
-    for (i = 0; i < comp_count; i++)
+    for (i = 0; i < s_component_count; i++)
     {
-        if (comp_list[i]->loop != NULL)
+        if (s_component_table[i]->loop != NULL)
         {
-            comp_list[i]->loop();
+            s_component_table[i]->loop();
         }
     }
 }

@@ -40,7 +40,7 @@ typedef struct
     void (*loop)(void);    /* 主循环轮询，可为 NULL */
 } component_t;
 
-void component_register(const component_t *c);
+void component_register(const component_t *component);
 void component_init_all(void);   /* 按注册顺序执行所有非空 init */
 void component_loop_all(void);   /* 按注册顺序执行所有非空 loop */
 

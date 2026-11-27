@@ -16,10 +16,10 @@
  *   - 功能码实现   → modbus_proto.c
  *   - 寄存器存储   → register_map.c
  *   - 诊断计数     → App/diag.c
- *   - 帧校验细节   → modbus_proto.c（Modbus_proto_check）
+ *   - 帧校验细节   → modbus_proto.c（mb_proto_check）
  *   - 缓冲与判帧   → Transport/frame.c（M2 已拆）
  *
- * 【M4 预留】下一步会把路由部分（下面 uartDataHandler_PC 里的 switch）
+ * 【M4 预留】下一步会把路由部分（下面 modbus_poll_pc_frames 里的 switch）
  *   搬到 App/router.c，届时本文件只剩"取帧 + 调 router + 发送"。
  */
 
@@ -28,10 +28,10 @@
 void modbus_init(void);
 
 /* PC 侧（USART1）消费者：主循环轮询调用，取帧 → 校验 → 路由 → 应答 */
-void uartDataHandler_PC(void);
+void modbus_poll_pc_frames(void);
 
 /* RS485 侧（USART2）消费者：取帧后原样回显给 PC
  * （帧来自总线上的外部变送器，本机不改内容、不做校验） */
-void uartDataHandler_Modbus(void);
+void modbus_poll_rs485_frames(void);
 
 #endif /* __MODBUS_RTU_H__ */

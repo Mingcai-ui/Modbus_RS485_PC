@@ -28,17 +28,17 @@
  * 调试时如果发现某个回调不执行，先怀疑是不是超了这里。 */
 #define TICK_CB_MAX 8
 
-static tick_cb_t tick_cbs[TICK_CB_MAX];
-static uint8_t tick_cb_count = 0;
+static tick_cb_t s_tick_callbacks[TICK_CB_MAX];     //计数器注册表
+static uint8_t s_tick_callback_count = 0;           //计数器'指针'
 
 /* 注册一个 1ms 回调。
  * 只需在初始化阶段（main 的 while(1) 之前）调用一次，运行中增删不安全。
  * 传 NULL 会被挡掉，避免运行时判空遗漏导致 HardFault。 */
 void tick_register(tick_cb_t cb)
 {
-    if (cb != NULL && tick_cb_count < TICK_CB_MAX)
+    if (cb != NULL && s_tick_callback_count < TICK_CB_MAX)
     {
-        tick_cbs[tick_cb_count++] = cb;
+        s_tick_callbacks[s_tick_callback_count++] = cb;
     }
 }
 
@@ -46,11 +46,11 @@ void tick_register(tick_cb_t cb)
 void tick_handle(void)
 {
     uint8_t i;
-    for (i = 0; i < tick_cb_count; i++)
+    for (i = 0; i < s_tick_callback_count; i++)
     {
-        if (tick_cbs[i] != NULL)
+        if (s_tick_callbacks[i] != NULL)
         {
-            tick_cbs[i]();  //执行函数指针指向的函数    未加括号数组存函数地址,加括号后
+            s_tick_callbacks[i]();  //执行函数指针指向的函数    未加括号数组存函数地址,加括号后
         }
     }
 }

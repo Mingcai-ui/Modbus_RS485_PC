@@ -17,7 +17,7 @@
  *   用计数器记住嵌套层数，只有最外层退出时才真正开中断。
  *   这与 FreeRTOS 的 taskENTER_CRITICAL 嵌套语义一致，
  *   将来换成 RTOS 版本时调用方代码不用改。 */
-static volatile uint32_t critical_depth = 0;
+static volatile uint32_t s_critical_nesting_depth = 0;
 
 /* 进入临界区：关中断 + 层数加一。
  * 关中断会同时屏蔽 SysTick，所以临界区内不能有耗时操作，
@@ -25,7 +25,7 @@ static volatile uint32_t critical_depth = 0;
 void critical_enter(void)
 {
     __disable_irq();    //屏蔽中断
-    critical_depth++;
+    s_critical_nesting_depth++;
 }
 
 /* 退出临界区：层数减一，减到 0 才真正开中断。
@@ -33,10 +33,10 @@ void critical_enter(void)
  * 0xFFFFFFFF，那样就永远开不了中断了。 */
 void critical_exit(void)
 {
-    if (critical_depth > 0)
+    if (s_critical_nesting_depth > 0)
     {
-        critical_depth--;
-        if (critical_depth == 0)
+        s_critical_nesting_depth--;
+        if (s_critical_nesting_depth == 0)
         {
             __enable_irq();
         }

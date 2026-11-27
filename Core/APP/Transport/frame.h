@@ -30,7 +30,7 @@ typedef enum
 {
     FRAME_CH_PC = 0,     /* USART1：PC 上位机（二进制 Modbus 帧） */
     FRAME_CH_RS485,      /* USART2：RS485 总线（外部变送器应答） */
-    FRAME_CH_COUNT       /* 通道总数，兼作 channels[] 数组长度 */
+    FRAME_CH_COUNT       /* 通道总数，兼作 s_channels[] 数组长度 */
 } frame_ch_t;
 
 /* 初始化：启动两路中断接收。必须在 MX_USARTx_UART_Init() 之后调用一次。 */

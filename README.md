@@ -166,6 +166,12 @@ PC  ←  01 03 02 01 14 B9 DB       应答：字节数 02 / 数据 0x0114(276)
 > **规范：每次更新推送，都必须说明三段 —— 改了什么 / 加了什么 / 解决了什么。**
 > `git commit` 的 message、推送时的说明、以及此处的每一条记录，都按这个结构写。
 
+### v2.3.1 候选 · 2026-11-27 · `modbus_congji`（命名规范化：静态变量 `s_` 前缀 + 模块前缀函数名）
+
+- **改了什么**：全工程静态变量统一加 `s_` 前缀 —— `Transport/frame.c` 的 `channels[]` → `s_channels[]`，`Modbus/modbus_rtu.c` 的 `rx_pc` / `rx_rs485` / `tx_buf` → `s_pc_frame` / `s_rs485_frame` / `s_response_frame`，`Core/component.c` 的 `comp_list` / `comp_count` → `s_component_table` / `s_component_count`，`Core/tick.c` 的 `tick_cbs` / `tick_cb_count` → `s_tick_callbacks` / `s_tick_callback_count`，`Core/critical.c` 的 `critical_depth` → `s_critical_nesting_depth`（语义同时明确为「嵌套深度」），`Modbus/register_map.c` 的 `reg_value` / `coil_value` / `reg_meta_table` → `s_reg_values` / `s_coil_values` / `s_reg_meta_table`，`App/diag.c` 的 `diag_cnt` → `s_diag_counters`；`frame.c` 的局部槽指针 `c` → `slot`、`component.c` 的函数形参 `c` → `component`；`tick.c` 补两行寄存器表注释。逻辑、控制流、类型、缓冲长度均未变。
+- **加了什么**：无新增文件与功能。仅函数改名并同步声明与调用点 —— `uartDataHandler_PC()` → `modbus_poll_pc_frames()`、`uartDataHandler_Modbus()` → `modbus_poll_rs485_frames()`（`modbus_rtu.h:31`、`:35`），`Modbus_proto_check()` → `mb_proto_check()`（`modbus_proto.h`），`MODBUS_CRC16()` → `modbus_crc16()`（`CRC16.h:7`）；`main.c:136-137` 两处调用、`frame.c` / `modbus_rtu.c` / `modbus_proto.c` 内注释中的旧名一并订正。
+- **解决了什么**：静态存储期标识符与局部变量同名难辨的问题（`c`、`count`、`value` 这类名字在声明处看不出生命周期，加 `s_` 后可一眼区分，避免误以为是可按值传参的局部量）；`frame.c` 与 `component.c` 各有一个 `c` 指针、`channels[]` 与 `comp_list[]` 语义相近的跨模块歧义；`uartDataHandler_*` 从名字看不出归属层（既像帧层又像协议层）的问题，改为 `modbus_poll_*_frames` 后与 M4 的 `router` 拆分方向一致。**未编译验证**：本轮仅重命名与注释，未在本机 EIDE 下重新编译；`.eide/eide.yml` 中被误删的 8 条 `Core/APP/*` incList 已撤回、保持原样。
+
 ### v2.3.0 候选 · 2026-11-19 · `modbus_congji`（重构 M3：协议 / 数据模型 / 诊断三层拆分）
 
 - **改了什么**：`modbus_rtu.c` 由 385 行单文件瘦身为薄壳（只剩「取帧 → 校验 → 路由 → 发送」，`checkFrame()` 折进 `Modbus_proto_check()`，`sendMessage()` 换成 `send_by_addr()`，缓冲类型由 `char` 统一改 `uint8_t`，不再依赖 `-funsigned-char`）；`modbus_rtu.h` 由 76 行降到 37 行，删掉 `ModbusRegister` / `ModbusCoil` / `bad_*` 四个 `extern` 与 `FrameCheckResult` 枚举，只留 `modbus_init()` + 两个消费者；`main.c` 主循环写入由 `ModbusRegister[0]=...` 改为 `reg_write(0, ...)` 并新增 `modbus_init()` 调用；`Transport/frame.c/.h` 注释去掉已删除的 `FRAME_Too_LONG` 枚举名；`.eide/eide.yml` 与 `tools/build.sh` 增加 `Core/APP/App` 头文件路径及 `diag.c` / `modbus_proto.c` / `register_map.c` 三个源文件。

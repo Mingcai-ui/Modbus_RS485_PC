@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 /* 计数值。只在主循环上下文访问，故不加 volatile（原因见 diag.h）。 */
-static uint32_t diag_cnt[DIAG_COUNT];
+static uint32_t s_diag_counters[DIAG_COUNT];
 
 // /* 名字表：下标与 diag_id_t 一一对应。
 //  * 加新计数器时这里必须同步加一行，否则返回 "?" —— 编译不会报错，
@@ -22,7 +22,7 @@ void diag_inc(diag_id_t id)     //id就是数组空间的下标，用于计数�
 {
     if ((unsigned)id < DIAG_COUNT)
     {
-        diag_cnt[id]++;
+        s_diag_counters[id]++;
     }
 }
 
@@ -33,7 +33,7 @@ uint32_t diag_get(diag_id_t id)     //将指定计数器信息返回
         return 0;
     }
 
-    return diag_cnt[id];
+    return s_diag_counters[id];
 }
 
 // const char *diag_name(diag_id_t id)
@@ -52,6 +52,6 @@ void diag_reset(void)   //将所有计算器清零
 
     for (i = 0; i < DIAG_COUNT; i++)
     {
-        diag_cnt[i] = 0;
+        s_diag_counters[i] = 0;
     }
 }

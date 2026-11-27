@@ -9,7 +9,7 @@
  *
  * 【依赖方向】上层(协议/路由/应用) → 本层 → HAL
  *   本层不认识 Modbus、不认识功能码、不认识寄存器。
- *   上层通过 frame_poll() 取帧，不得直接访问 channels[]。
+ *   上层通过 frame_poll() 取帧，不得直接访问 s_channels[]。
  *
  * 【执行上下文】本层代码在三种上下文中运行，靠 volatile + 共享帧槽通信：
  *   - frame_on_byte()  : USART 接收中断（每字节一次）
@@ -60,7 +60,7 @@ typedef struct
 /* 通道表：用"结构体数组 + 枚举下标"代替"变量名加 _PC 后缀"的复制粘贴。
  * 新增第 3 路串口只需在 frame_ch_t 枚举里加一项、在 ch_huart() 里加一行映射，
  * frame_on_byte / frame_tick / frame_poll 的逻辑代码一行都不用改。 */
-static frame_slot_t channels[FRAME_CH_COUNT];
+static frame_slot_t s_channels[FRAME_CH_COUNT];
 
 /* 通道 → HAL 句柄 映射。
  * 把对 huart1/huart2 的依赖关在本文件内部：上层看不到 HAL 句柄，
@@ -72,13 +72,13 @@ static UART_HandleTypeDef *ch_huart(frame_ch_t ch)
 
 /* 启动两路中断接收。
  *
- * 注意接收指针指向 channels[].rx_byte（帧槽成员），不能是局部变量：
+ * 注意接收指针指向 s_channels[].rx_byte（帧槽成员），不能是局部变量：
  * HAL_UART_Receive_IT 只是登记指针后立即返回，真正的数据在中断里才写入，
  * 指针必须一直有效。这也是原工程 uart1_RxData/uart2_RxData 必须是全局变量的原因。 */
 void frame_init(void)
 {
-    HAL_UART_Receive_IT(&huart1, (uint8_t *)&channels[FRAME_CH_PC].rx_byte, 1);
-    HAL_UART_Receive_IT(&huart2, (uint8_t *)&channels[FRAME_CH_RS485].rx_byte, 1);
+    HAL_UART_Receive_IT(&huart1, (uint8_t *)&s_channels[FRAME_CH_PC].rx_byte, 1);
+    HAL_UART_Receive_IT(&huart2, (uint8_t *)&s_channels[FRAME_CH_RS485].rx_byte, 1);
 }
 
 /* 中断回调实体：收到一个字节（USART 中断上下文）
@@ -86,7 +86,7 @@ void frame_init(void)
  * 三件事：写缓冲、重置静默计时、重新武装接收。 */
 void frame_on_byte(frame_ch_t ch, uint8_t byte)
 {
-    frame_slot_t *c = &channels[ch];
+    frame_slot_t *slot = &s_channels[ch];
 
     /* 【防 uint8_t 回绕 —— 本函数最关键的判断】
      * 缓冲满了绝不能继续 rx_count++。因为 rx_count 是 uint8_t，
@@ -95,21 +95,21 @@ void frame_on_byte(frame_ch_t ch, uint8_t byte)
      * "头部合法、长度正常"的帧，甚至可能碰巧通过 CRC。
      * 所以宁可冻结计数、丢弃尾部，只留一个 overflow 标记，
      * 让上层明确判为超长并计数。 */
-    if (c->rx_count < FRAME_BUF_SIZE)
+    if (slot->rx_count < FRAME_BUF_SIZE)
     {
-        c->rx_buf[c->rx_count++] = byte;
+        slot->rx_buf[slot->rx_count++] = byte;
     }
     else
     {
-        c->overflow = 1;
+        slot->overflow = 1;
     }
 
-    c->rx_active = 1;      /* 标记总线处于接收中，frame_tick 才会开始计时 */
-    c->time_counter = 0;   /* 每收到一个字节就重置帧间隔计时 */
+    slot->rx_active = 1;      /* 标记总线处于接收中，frame_tick 才会开始计时 */
+    slot->time_counter = 0;   /* 每收到一个字节就重置帧间隔计时 */
 
     /* 重新武装：HAL 的 IT 接收是一次性的，处理完必须再次登记，
      * 否则收完这个字节之后就再也进不了这个通道的中断。 */
-    HAL_UART_Receive_IT(ch_huart(ch), (uint8_t *)&c->rx_byte, 1);
+    HAL_UART_Receive_IT(ch_huart(ch), (uint8_t *)&slot->rx_byte, 1);
 }
 
 /* 接收错误恢复（USART 中断上下文）
@@ -118,19 +118,19 @@ void frame_on_byte(frame_ch_t ch, uint8_t byte)
  * 下一个字节就到了。此时硬件可能停止接收，必须清标志并重新武装才能恢复。 */
 void frame_on_error(frame_ch_t ch)
 {
-    frame_slot_t *c = &channels[ch];
+    frame_slot_t *slot = &s_channels[ch];
 
     __HAL_UART_CLEAR_OREFLAG(ch_huart(ch));
 
-    c->rx_count = 0;
-    c->rx_active = 0;
-    c->time_counter = 0;
+    slot->rx_count = 0;
+    slot->rx_active = 0;
+    slot->time_counter = 0;
     /* 本帧已放弃，超长证据一并作废：否则 rx_active=0 让定时器不再判帧，
      * handler 永远不跑，这个 SET 残留到下一帧，把合法帧误判成超长。
      * 这就是"状态跨帧污染"，状态机里最经典的坑之一。 */
-    c->overflow = 0;
+    slot->overflow = 0;
 
-    HAL_UART_Receive_IT(ch_huart(ch), (uint8_t *)&c->rx_byte, 1);
+    HAL_UART_Receive_IT(ch_huart(ch), (uint8_t *)&slot->rx_byte, 1);
 }
 
 /* 判帧：每 1ms 由 tick 分发器调用一次（SysTick 中断上下文）
@@ -142,18 +142,18 @@ void frame_tick(void)
     uint8_t i;
     for (i = 0; i < FRAME_CH_COUNT; i++)
     {
-        frame_slot_t *c = &channels[i];
+        frame_slot_t *slot = &s_channels[i];
 
-        if (c->rx_active == 0)   /* 总线没在收，不计时 */
+        if (slot->rx_active == 0)   /* 总线没在收，不计时 */
         {
             continue;
         }
 
-        if (++c->time_counter >= FRAME_GAP_MS)   /* 静默够久，认为一帧结束 */
+        if (++slot->time_counter >= FRAME_GAP_MS)   /* 静默够久，认为一帧结束 */
         {
-            c->rx_active = 0;
-            c->time_counter = 0;
-            c->frame_ready = 1;      /* 取到完整的一帧数据 */
+            slot->rx_active = 0;
+            slot->time_counter = 0;
+            slot->frame_ready = 1;      /* 取到完整的一帧数据 */
         }
     }
 }
@@ -177,30 +177,30 @@ void frame_tick(void)
  *   5ms 静默，实际几乎撞不上；严格解决属于 M5 请求-应答状态机的范围。 */
 uint8_t frame_poll(frame_ch_t ch, uint8_t *out, uint8_t *overflowed)
 {
-    frame_slot_t *c = &channels[ch];
+    frame_slot_t *slot = &s_channels[ch];
     uint8_t len;
 
-    if (c->frame_ready == 0)       //判断当前是否收到完整帧
+    if (slot->frame_ready == 0)       //判断当前是否收到完整帧
     {
         return 0;
     }
 
-    c->frame_ready = 0;          /* ① 认领 */
-    len = c->rx_count;           /* ② 取长度 */
-    c->rx_count = 0;             /* ③ 腾位置 */
+    slot->frame_ready = 0;          /* ① 认领 */
+    len = slot->rx_count;           /* ② 取长度 */
+    slot->rx_count = 0;             /* ③ 腾位置 */
 
     if (overflowed != NULL)
     {
-        *overflowed = c->overflow;
+        *overflowed = slot->overflow;
     }
     /* overflow 必须"取走即清零"：留在槽里会被下一帧误读，判成超长。
      * 这也是这里设计成出参、而不让上层直接读字段的原因。 */
-    c->overflow = 0;
+    slot->overflow = 0;
 
     if (len > 0)
     {
-        memcpy(out, c->rx_buf, len);
-        memset(c->rx_buf, 0, FRAME_BUF_SIZE);   /* 保留原行为的冗余清零，便于调试观察缓冲内容 */
+        memcpy(out, slot->rx_buf, len);
+        memset(slot->rx_buf, 0, FRAME_BUF_SIZE);   /* 保留原行为的冗余清零，便于调试观察缓冲内容 */
     }
 
     return len;
@@ -216,11 +216,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART1)
     {
-        frame_on_byte(FRAME_CH_PC, channels[FRAME_CH_PC].rx_byte);
+        frame_on_byte(FRAME_CH_PC, s_channels[FRAME_CH_PC].rx_byte);
     }
     else if (huart->Instance == USART2)
     {
-        frame_on_byte(FRAME_CH_RS485, channels[FRAME_CH_RS485].rx_byte);
+        frame_on_byte(FRAME_CH_RS485, s_channels[FRAME_CH_RS485].rx_byte);
     }
 }
 

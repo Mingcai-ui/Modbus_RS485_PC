@@ -114,7 +114,7 @@ int main(void)
 
   /*  启动串口中断接收  */
   frame_init();
-  console_init();
+  console_init(); //重定向printf内容，暂未写
 
   OLED_Init();
   OLED_Clear();
@@ -133,8 +133,8 @@ int main(void)
   {
     DHT11_Status st = DHT11_Handler(&dht);
 
-    uartDataHandler_PC();       // PC 侧数据处理
-    uartDataHandler_Modbus();   // Modbus 侧数据处理
+    modbus_poll_pc_frames();       // PC 侧数据处理
+    modbus_poll_rs485_frames();    // Modbus 侧数据处理
 
     if (st == DHT11_OK)
     {
